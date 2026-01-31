@@ -1,12 +1,21 @@
 use color_eyre::eyre::{Ok, Result};
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyEvent},
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Style, Stylize},
-    text::ToSpan,
-    widgets::{Block, List, ListItem, ListState, Paragraph, Widget},
+    crossterm::event::{self, Event, KeyCode, KeyEvent},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+    },
 };
+
+const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
+const COMPLETED_ROW_COLOR: Color = Color::Rgb(100, 100, 100);
+const TEXT_COLOR: Color = Color::Rgb(255, 255, 255);
+const HIGHLIGHT_STYLE: Style = Style::new()
+    .bg(Color::Rgb(60, 60, 60))
+    .add_modifier(Modifier::BOLD);
 
 #[derive(Debug, Default)]
 struct AppState {
@@ -43,9 +52,8 @@ fn main() -> Result<()> {
 
 fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
     loop {
-        // render
         terminal.draw(|f| render(f, app_state))?;
-        // input
+
         if let Event::Key(key) = event::read()? {
             if app_state.new_item_added {
                 match handle_new_task(key, app_state) {
@@ -75,18 +83,12 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
 
 fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
     match key.code {
-        event::KeyCode::Char(c) => {
-            app_state.input.push(c);
-        }
-        event::KeyCode::Backspace => {
+        KeyCode::Char(c) => app_state.input.push(c),
+        KeyCode::Backspace => {
             app_state.input.pop();
         }
-        event::KeyCode::Esc => {
-            return FormAction::Escape;
-        }
-        event::KeyCode::Enter => {
-            return FormAction::Submit;
-        }
+        KeyCode::Esc => return FormAction::Escape,
+        KeyCode::Enter => return FormAction::Submit,
         _ => {}
     }
     FormAction::None
@@ -94,78 +96,139 @@ fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
 
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
-        event::KeyCode::Esc => {
-            return true;
-        }
-        event::KeyCode::Enter => {
+        KeyCode::Esc => return true,
+        KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(index) = app_state.list_state.selected() {
                 if let Some(task) = app_state.items.get_mut(index) {
                     task.is_done = !task.is_done;
                 }
             }
         }
-        event::KeyCode::Char(char) => match char {
-            'k' => {
-                app_state.list_state.select_previous();
+        KeyCode::Char('k') => app_state.list_state.select_previous(),
+        KeyCode::Char('j') => app_state.list_state.select_next(),
+        KeyCode::Char('a') => app_state.new_item_added = true,
+        KeyCode::Char('d') => {
+            if let Some(index) = app_state.list_state.selected() {
+                app_state.items.remove(index);
             }
-            'j' => {
-                app_state.list_state.select_next();
-            }
-            'a' => {
-                app_state.new_item_added = true;
-            }
-            'd' => {
-                if let Some(index) = app_state.list_state.selected() {
-                    app_state.items.remove(index);
-                }
-            }
-            _ => {}
-        },
+        }
         _ => {}
     }
     false
 }
 
 fn render(frame: &mut Frame, app_state: &mut AppState) {
-    let [border_area] = Layout::vertical([Constraint::Fill(1)])
-        .margin(1)
-        .areas(frame.area());
+    let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]);
 
-    let [inner_area] = Layout::vertical([Constraint::Fill(1)])
-        .margin(1)
-        .areas(border_area);
+    let [main_area, footer_area] = vertical.areas(frame.area());
 
-    let [input_area] = Layout::vertical([Constraint::Fill(1)]).areas(Rect::new(
-        inner_area.x,
-        inner_area.y + inner_area.height - 3,
-        inner_area.width,
-        3,
-    ));
+    if app_state.items.is_empty() {
+        let empty_msg = Paragraph::new("No tasks yet.\nPress 'a' to add one.")
+            .centered()
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty_msg, main_area);
+    } else {
+        let items: Vec<ListItem> = app_state
+            .items
+            .iter()
+            .map(|task| {
+                let (icon, style) = if task.is_done {
+                    ("✅", Style::default().fg(COMPLETED_ROW_COLOR))
+                } else {
+                    ("☐", Style::default().fg(NORMAL_ROW_COLOR))
+                };
 
-    Block::bordered()
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .render(border_area, frame.buffer_mut());
+                let desc_style = if task.is_done {
+                    Style::default()
+                        .fg(COMPLETED_ROW_COLOR)
+                        .add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    Style::default().fg(TEXT_COLOR)
+                };
 
-    let list = List::new(app_state.items.iter().map(|x| {
-        let value = if x.is_done {
-            x.description.to_span().crossed_out()
-        } else {
-            x.description.to_span()
-        };
-        ListItem::from(value)
-    }))
-    .highlight_symbol(">")
-    .highlight_style(Style::default().fg(Color::Red));
+                let line = Line::from(vec![
+                    Span::styled(format!(" {} ", icon), style),
+                    Span::styled(&task.description, desc_style),
+                ]);
 
-    frame.render_stateful_widget(list, inner_area, &mut app_state.list_state);
+                ListItem::new(line)
+            })
+            .collect();
+
+        let list_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(" Tasks ")
+            .title_style(Style::default().fg(Color::Yellow))
+            .padding(Padding::horizontal(1));
+
+        let list = List::new(items)
+            .block(list_block)
+            .highlight_style(HIGHLIGHT_STYLE)
+            .highlight_symbol("▎");
+
+        frame.render_stateful_widget(list, main_area, &mut app_state.list_state);
+    }
+
+    let help_text = Line::from(vec![
+        Span::styled(
+            "h - ",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("help | "),
+        Span::styled(
+            "q/esc - ",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("quit"),
+    ]);
+
+    let footer = Paragraph::new(help_text)
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(footer, footer_area);
 
     if app_state.new_item_added {
-        Paragraph::new(app_state.input.as_str())
-            .block(
-                Block::bordered()
-                    .border_type(ratatui::widgets::BorderType::Rounded)
-                    .title("create a new task".to_span().into_centered_line()),
-            )
-            .render(input_area, frame.buffer_mut());
+        let popup_area = center_area(frame.area(), 60, 20);
+
+        frame.render_widget(Clear, popup_area);
+
+        let popup_block = Block::bordered()
+            .title(" Create New Task ")
+            .title_style(Style::default().add_modifier(Modifier::BOLD))
+            .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Thick);
+
+        let input_text = Paragraph::new(app_state.input.as_str())
+            .wrap(Wrap { trim: true })
+            .block(popup_block);
+
+        frame.render_widget(input_text, popup_area);
+
+        let hint_area = Rect::new(
+            popup_area.x,
+            popup_area.y + popup_area.height,
+            popup_area.width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new("Enter: Submit | Esc: Cancel")
+                .centered()
+                .fg(Color::DarkGray),
+            hint_area,
+        );
     }
+}
+
+fn center_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
 }
