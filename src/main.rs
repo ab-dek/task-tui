@@ -9,6 +9,9 @@ use ratatui::{
         Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
     },
 };
+use serde::{Deserialize, Serialize};
+use std::fs::{self};
+use std::result;
 
 const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
 const COMPLETED_ROW_COLOR: Color = Color::Rgb(100, 100, 100);
@@ -16,19 +19,38 @@ const TEXT_COLOR: Color = Color::Rgb(255, 255, 255);
 const HIGHLIGHT_STYLE: Style = Style::new()
     .bg(Color::Rgb(60, 60, 60))
     .add_modifier(Modifier::BOLD);
+const PATH: &str = "./tasks.json";
 
-#[derive(Debug, Default)]
-struct AppState {
-    items: Vec<Task>,
-    list_state: ListState,
-    new_item_added: bool,
-    input: String,
-}
-
-#[derive(Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct Task {
     is_done: bool,
     description: String,
+}
+
+#[derive(Debug, Default)]
+struct AppState {
+    tasks: Vec<Task>,
+    list_state: ListState,
+    new_task_added: bool,
+    input: String,
+}
+
+impl AppState {
+    fn new() -> Self {
+        let mut state = AppState::default();
+        let result::Result::Ok(data) = fs::read_to_string(PATH) else {
+            state.tasks = vec![];
+            return state;
+        };
+        let tasks = serde_json::from_str(&data).unwrap_or_else(|_| vec![]);
+        state.tasks = tasks;
+        state
+    }
+
+    fn save_tasks(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string(&self.tasks).unwrap();
+        fs::write(path, json)
+    }
 }
 
 enum FormAction {
@@ -38,8 +60,8 @@ enum FormAction {
 }
 
 fn main() -> Result<()> {
-    let mut state = AppState::default();
-    state.new_item_added = false;
+    let mut state = AppState::new();
+    state.new_task_added = false;
     color_eyre::install()?;
 
     let terminal = ratatui::init();
@@ -55,18 +77,20 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
         terminal.draw(|f| render(f, app_state))?;
 
         if let Event::Key(key) = event::read()? {
-            if app_state.new_item_added {
+            if app_state.new_task_added {
                 match handle_new_task(key, app_state) {
                     FormAction::Escape => {
-                        app_state.new_item_added = false;
+                        app_state.new_task_added = false;
                         app_state.input.clear();
                     }
                     FormAction::Submit => {
-                        app_state.new_item_added = false;
-                        app_state.items.push(Task {
+                        let new_task = Task {
                             is_done: false,
                             description: app_state.input.clone(),
-                        });
+                        };
+                        app_state.new_task_added = false;
+                        app_state.tasks.push(new_task);
+                        app_state.save_tasks(PATH)?;
                         app_state.input.clear();
                     }
                     FormAction::None => {}
@@ -96,20 +120,22 @@ fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
 
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
-        KeyCode::Esc => return true,
+        KeyCode::Esc | KeyCode::Char('q') => return true,
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(index) = app_state.list_state.selected() {
-                if let Some(task) = app_state.items.get_mut(index) {
+                if let Some(task) = app_state.tasks.get_mut(index) {
                     task.is_done = !task.is_done;
+                    let _ = app_state.save_tasks(PATH);
                 }
             }
         }
         KeyCode::Char('k') => app_state.list_state.select_previous(),
         KeyCode::Char('j') => app_state.list_state.select_next(),
-        KeyCode::Char('a') => app_state.new_item_added = true,
+        KeyCode::Char('a') => app_state.new_task_added = true,
         KeyCode::Char('d') => {
             if let Some(index) = app_state.list_state.selected() {
-                app_state.items.remove(index);
+                app_state.tasks.remove(index);
+                let _ = app_state.save_tasks(PATH);
             }
         }
         _ => {}
@@ -122,20 +148,20 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
 
     let [main_area, footer_area] = vertical.areas(frame.area());
 
-    if app_state.items.is_empty() {
+    if app_state.tasks.is_empty() {
         let empty_msg = Paragraph::new("No tasks yet.\nPress 'a' to add one.")
             .centered()
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty_msg, main_area);
     } else {
         let items: Vec<ListItem> = app_state
-            .items
+            .tasks
             .iter()
             .map(|task| {
                 let (icon, style) = if task.is_done {
-                    ("✅", Style::default().fg(COMPLETED_ROW_COLOR))
+                    ("", Style::default().fg(COMPLETED_ROW_COLOR))
                 } else {
-                    ("☐", Style::default().fg(NORMAL_ROW_COLOR))
+                    ("", Style::default().fg(NORMAL_ROW_COLOR))
                 };
 
                 let desc_style = if task.is_done {
@@ -192,7 +218,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, footer_area);
 
-    if app_state.new_item_added {
+    if app_state.new_task_added {
         let popup_area = center_area(frame.area(), 60, 20);
 
         frame.render_widget(Clear, popup_area);
