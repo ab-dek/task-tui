@@ -10,8 +10,11 @@ use ratatui::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::fs::{self};
 use std::result;
+use std::{
+    fs::{self},
+    ops::IndexMut,
+};
 
 const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
 const COMPLETED_ROW_COLOR: Color = Color::Rgb(100, 100, 100);
@@ -25,6 +28,7 @@ const PATH: &str = "./tasks.json";
 struct Task {
     is_done: bool,
     description: String,
+    sub_tasks: Vec<Task>,
 }
 
 #[derive(Debug, Default)]
@@ -32,6 +36,7 @@ struct AppState {
     tasks: Vec<Task>,
     list_state: ListState,
     new_task_added: bool,
+    new_subtask_added: bool,
     input: String,
 }
 
@@ -47,8 +52,8 @@ impl AppState {
         state
     }
 
-    fn save_tasks(&self, path: &str) -> std::io::Result<()> {
-        let json = serde_json::to_string(&self.tasks).unwrap();
+    fn save(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self.tasks).unwrap();
         fs::write(path, json)
     }
 }
@@ -87,10 +92,19 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
                         let new_task = Task {
                             is_done: false,
                             description: app_state.input.clone(),
+                            sub_tasks: vec![],
                         };
                         app_state.new_task_added = false;
-                        app_state.tasks.push(new_task);
-                        app_state.save_tasks(PATH)?;
+                        if app_state.new_subtask_added {
+                            if let Some(index) = app_state.list_state.selected() {
+                                let parent_task = app_state.tasks.index_mut(index);
+                                parent_task.sub_tasks.push(new_task);
+                                app_state.new_subtask_added = false;
+                            }
+                        } else {
+                            app_state.tasks.push(new_task);
+                        }
+                        app_state.save(PATH)?;
                         app_state.input.clear();
                     }
                     FormAction::None => {}
@@ -125,7 +139,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             if let Some(index) = app_state.list_state.selected() {
                 if let Some(task) = app_state.tasks.get_mut(index) {
                     task.is_done = !task.is_done;
-                    let _ = app_state.save_tasks(PATH);
+                    let _ = app_state.save(PATH);
                 }
             }
         }
@@ -135,8 +149,18 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Char('d') => {
             if let Some(index) = app_state.list_state.selected() {
                 app_state.tasks.remove(index);
-                let _ = app_state.save_tasks(PATH);
+                let _ = app_state.save(PATH);
             }
+        }
+        KeyCode::Char('A') => {
+            app_state.new_task_added = true;
+            app_state.new_subtask_added = true;
+        }
+        KeyCode::Char('J') => {
+            //TODO: expand subtasks
+        }
+        KeyCode::Char('K') => {
+            //TODO: collapse subtasks
         }
         _ => {}
     }
@@ -172,7 +196,14 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                     Style::default().fg(TEXT_COLOR)
                 };
 
+                let dropdown = if task.sub_tasks.is_empty() {
+                    " "
+                } else {
+                    ""
+                };
+
                 let line = Line::from(vec![
+                    Span::styled(dropdown, Style::default().fg(Color::Gray)),
                     Span::styled(format!(" {} ", icon), style),
                     Span::styled(&task.description, desc_style),
                 ]);
