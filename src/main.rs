@@ -10,11 +10,8 @@ use ratatui::{
     },
 };
 use serde::{Deserialize, Serialize};
+use std::fs::{self};
 use std::result;
-use std::{
-    fs::{self},
-    ops::IndexMut,
-};
 
 const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
 const COMPLETED_ROW_COLOR: Color = Color::Rgb(100, 100, 100);
@@ -29,7 +26,10 @@ struct Task {
     is_done: bool,
     description: String,
     sub_tasks: Vec<Task>,
+    expanded: bool, // expanded to display subtasks
 }
+
+// fn flatten_tasks() {}
 
 #[derive(Debug, Default)]
 struct AppState {
@@ -56,6 +56,12 @@ impl AppState {
         let json = serde_json::to_string_pretty(&self.tasks).unwrap();
         fs::write(path, json)
     }
+}
+
+struct FlatItem<'a> {
+    task: &'a Task,
+    depth: usize,
+    index_path: Vec<usize>,
 }
 
 enum FormAction {
@@ -93,13 +99,17 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
                             is_done: false,
                             description: app_state.input.clone(),
                             sub_tasks: vec![],
+                            expanded: false,
                         };
                         app_state.new_task_added = false;
                         if app_state.new_subtask_added {
-                            if let Some(index) = app_state.list_state.selected() {
-                                let parent_task = app_state.tasks.index_mut(index);
-                                parent_task.sub_tasks.push(new_task);
-                                app_state.new_subtask_added = false;
+                            if let Some(path) = get_selected_path(app_state) {
+                                if let Some(parent_task) =
+                                    get_task_by_path(&mut app_state.tasks, &path)
+                                {
+                                    parent_task.sub_tasks.push(new_task);
+                                    app_state.new_subtask_added = false;
+                                }
                             }
                         } else {
                             app_state.tasks.push(new_task);
@@ -119,6 +129,46 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
     Ok(())
 }
 
+fn flatten_tasks<'a>(tasks: &'a [Task], depth: usize, current_path: &[usize]) -> Vec<FlatItem<'a>> {
+    let mut flat_list = Vec::new();
+    for (i, task) in tasks.iter().enumerate() {
+        let mut new_path = current_path.to_vec();
+        new_path.push(i);
+
+        flat_list.push(FlatItem {
+            task,
+            depth,
+            index_path: new_path.clone(),
+        });
+
+        if task.expanded {
+            let children = flatten_tasks(&task.sub_tasks, depth + 1, &new_path);
+            flat_list.extend(children);
+        }
+    }
+
+    flat_list
+}
+
+fn get_task_by_path<'a>(tasks: &'a mut Vec<Task>, path: &[usize]) -> Option<&'a mut Task> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut current = tasks.get_mut(path[0])?;
+    for &idx in &path[1..] {
+        current = current.sub_tasks.get_mut(idx)?;
+    }
+    Some(current)
+}
+
+fn get_selected_path(app_state: &mut AppState) -> Option<Vec<usize>> {
+    let flat_view = flatten_tasks(&app_state.tasks, 0, &[]);
+    let current_index = app_state.list_state.selected().unwrap_or(0);
+    flat_view
+        .get(current_index)
+        .map(|item| item.index_path.clone())
+}
+
 fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
     match key.code {
         KeyCode::Char(c) => app_state.input.push(c),
@@ -135,9 +185,9 @@ fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => return true,
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(index) = app_state.list_state.selected() {
-                if let Some(task) = app_state.tasks.get_mut(index) {
+        KeyCode::Char(' ') => {
+            if let Some(path) = get_selected_path(app_state) {
+                if let Some(task) = get_task_by_path(&mut app_state.tasks, &path) {
                     task.is_done = !task.is_done;
                     let _ = app_state.save(PATH);
                 }
@@ -156,12 +206,16 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             app_state.new_task_added = true;
             app_state.new_subtask_added = true;
         }
-        KeyCode::Char('J') => {
-            //TODO: expand subtasks
+        KeyCode::Enter => {
+            if let Some(path) = get_selected_path(app_state) {
+                if let Some(task) = get_task_by_path(&mut app_state.tasks, &path) {
+                    if !task.sub_tasks.is_empty() {
+                        task.expanded = !task.expanded;
+                    }
+                }
+            }
         }
-        KeyCode::Char('K') => {
-            //TODO: collapse subtasks
-        }
+        //TODO: collapse subtasks
         _ => {}
     }
     false
@@ -172,16 +226,19 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
 
     let [main_area, footer_area] = vertical.areas(frame.area());
 
-    if app_state.tasks.is_empty() {
+    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
+
+    if flat_tasks.is_empty() {
         let empty_msg = Paragraph::new("No tasks yet.\nPress 'a' to add one.")
             .centered()
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty_msg, main_area);
     } else {
-        let items: Vec<ListItem> = app_state
-            .tasks
+        let items: Vec<ListItem> = flat_tasks
             .iter()
-            .map(|task| {
+            .map(|item| {
+                let task = item.task;
+
                 let (icon, style) = if task.is_done {
                     ("", Style::default().fg(COMPLETED_ROW_COLOR))
                 } else {
@@ -199,10 +256,15 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                 let dropdown = if task.sub_tasks.is_empty() {
                     " "
                 } else {
-                    ""
+                    if task.expanded { "" } else { "" }
                 };
 
+                if !task.sub_tasks.is_empty() {} //TODO: show task progress
+
+                let indent = "   ".repeat(item.depth);
+
                 let line = Line::from(vec![
+                    Span::styled(indent, Style::default()),
                     Span::styled(dropdown, Style::default().fg(Color::Gray)),
                     Span::styled(format!(" {} ", icon), style),
                     Span::styled(&task.description, desc_style),
@@ -221,8 +283,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
 
         let list = List::new(items)
             .block(list_block)
-            .highlight_style(HIGHLIGHT_STYLE)
-            .highlight_symbol("▎");
+            .highlight_style(HIGHLIGHT_STYLE);
 
         frame.render_stateful_widget(list, main_area, &mut app_state.list_state);
     }
