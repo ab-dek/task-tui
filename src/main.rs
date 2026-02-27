@@ -1,4 +1,5 @@
 use color_eyre::eyre::{Ok, Result};
+use log::{error, info};
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent},
@@ -75,6 +76,9 @@ fn main() -> Result<()> {
     state.new_task_added = false;
     color_eyre::install()?;
 
+    tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
+    tui_logger::set_default_level(log::LevelFilter::Trace);
+
     let terminal = ratatui::init();
     let result = run(terminal, &mut state);
 
@@ -94,29 +98,7 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
                         app_state.new_task_added = false;
                         app_state.input.clear();
                     }
-                    FormAction::Submit => {
-                        let new_task = Task {
-                            is_done: false,
-                            description: app_state.input.clone(),
-                            sub_tasks: vec![],
-                            expanded: false,
-                        };
-                        app_state.new_task_added = false;
-                        if app_state.new_subtask_added {
-                            if let Some(path) = get_selected_path(app_state) {
-                                if let Some(parent_task) =
-                                    get_task_by_path(&mut app_state.tasks, &path)
-                                {
-                                    parent_task.sub_tasks.push(new_task);
-                                    app_state.new_subtask_added = false;
-                                }
-                            }
-                        } else {
-                            app_state.tasks.push(new_task);
-                        }
-                        app_state.save(PATH)?;
-                        app_state.input.clear();
-                    }
+                    FormAction::Submit => add_new_task(app_state)?,
                     FormAction::None => {}
                 }
             } else {
@@ -126,6 +108,43 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn add_new_task(app_state: &mut AppState) -> Result<()> {
+    let new_task = Task {
+        is_done: false,
+        description: app_state.input.clone(),
+        sub_tasks: vec![],
+        expanded: false,
+    };
+    app_state.new_task_added = false;
+
+    if let Some(path) = get_selected_path(app_state) {
+        info!("adding new task");
+        if app_state.new_subtask_added {
+            info!("adding new sub task");
+            if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &path) {
+                parent_task.sub_tasks.push(new_task);
+                app_state.new_subtask_added = false;
+            }
+        } else {
+            info!("adding new root task, path: {:?}", path);
+            if path.len() > 1 {
+                // has a parent
+                let parent_path = path[0..path.len() - 1].to_vec();
+                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path) {
+                    parent_task.sub_tasks.push(new_task);
+                }
+            } else {
+                app_state.tasks.push(new_task);
+            }
+        }
+    } else {
+        error!("couldn't get task path!!");
+    }
+    app_state.save(PATH)?;
+    app_state.input.clear();
     Ok(())
 }
 
@@ -197,9 +216,26 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Char('j') => app_state.list_state.select_next(),
         KeyCode::Char('a') => app_state.new_task_added = true,
         KeyCode::Char('d') => {
-            if let Some(index) = app_state.list_state.selected() {
-                app_state.tasks.remove(index);
-                let _ = app_state.save(PATH);
+            if let Some(path) = get_selected_path(app_state) {
+                if path.len() == 1 {
+                    app_state.tasks.remove(path[0]);
+                    let _ = app_state.save(PATH);
+                } else {
+                    let parent_path = &path[0..path.len() - 1];
+                    let child_idx = path[path.len() - 1];
+                    if let Some(parent) = get_task_by_path(&mut app_state.tasks, parent_path) {
+                        parent.sub_tasks.remove(child_idx);
+                    }
+                }
+
+                let flat_view = flatten_tasks(&app_state.tasks, 0, &[]);
+                let current_index = app_state.list_state.selected().unwrap_or(0);
+                // current index correction
+                if current_index >= flat_view.len().saturating_sub(1) {
+                    app_state
+                        .list_state
+                        .select(Some(flat_view.len().saturating_sub(2)));
+                }
             }
         }
         KeyCode::Char('A') => {
@@ -215,13 +251,17 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 }
             }
         }
-        //TODO: collapse subtasks
         _ => {}
     }
     false
 }
 
 fn render(frame: &mut Frame, app_state: &mut AppState) {
+    // let chunks = Layout::default()
+    //     .direction(Direction::Vertical)
+    //     .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
+    //     .split(frame.area());
+
     let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]);
 
     let [main_area, footer_area] = vertical.areas(frame.area());
@@ -311,7 +351,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     frame.render_widget(footer, footer_area);
 
     if app_state.new_task_added {
-        let popup_area = center_area(frame.area(), 60, 20);
+        let popup_area = center_area(main_area, 60, 20);
 
         frame.render_widget(Clear, popup_area);
 
@@ -341,6 +381,14 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             hint_area,
         );
     }
+
+    // let log_widget = TuiLoggerWidget::default()
+    //     .block(Block::default().title("Logs").borders(Borders::ALL))
+    //     .style_error(Style::default().fg(Color::Red))
+    //     .style_warn(Style::default().fg(Color::Yellow))
+    //     .style_info(Style::default().fg(Color::Cyan));
+
+    // frame.render_widget(log_widget, chunks[1]);
 }
 
 fn center_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
