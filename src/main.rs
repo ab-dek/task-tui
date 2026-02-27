@@ -1,14 +1,11 @@
 use color_eyre::eyre::{Ok, Result};
-use log::{error, info};
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent},
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    layout::{Alignment, Constraint, Layout},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
-    },
+    widgets::{Block, BorderType, List, ListItem, ListState, Padding, Paragraph},
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
@@ -27,9 +24,21 @@ struct Task {
     is_done: bool,
     description: String,
     sub_tasks: Vec<Task>,
-    expanded: bool, // expanded to display subtasks
+    expanded: bool, // to display subtasks
+    is_draft: bool,
 }
 
+impl Task {
+    fn new_draft() -> Self {
+        Self {
+            is_done: false,
+            description: String::new(),
+            sub_tasks: vec![],
+            expanded: false,
+            is_draft: true,
+        }
+    }
+}
 // fn flatten_tasks() {}
 
 #[derive(Debug, Default)]
@@ -37,8 +46,6 @@ struct AppState {
     tasks: Vec<Task>,
     list_state: ListState,
     new_task_added: bool,
-    new_subtask_added: bool,
-    input: String,
 }
 
 impl AppState {
@@ -65,12 +72,6 @@ struct FlatItem<'a> {
     index_path: Vec<usize>,
 }
 
-enum FormAction {
-    None,
-    Submit,
-    Escape,
-}
-
 fn main() -> Result<()> {
     let mut state = AppState::new();
     state.new_task_added = false;
@@ -93,14 +94,7 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
 
         if let Event::Key(key) = event::read()? {
             if app_state.new_task_added {
-                match handle_new_task(key, app_state) {
-                    FormAction::Escape => {
-                        app_state.new_task_added = false;
-                        app_state.input.clear();
-                    }
-                    FormAction::Submit => add_new_task(app_state)?,
-                    FormAction::None => {}
-                }
+                handle_new_task(key, app_state)?
             } else {
                 if handle_key(key, app_state) {
                     break;
@@ -108,43 +102,6 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-fn add_new_task(app_state: &mut AppState) -> Result<()> {
-    let new_task = Task {
-        is_done: false,
-        description: app_state.input.clone(),
-        sub_tasks: vec![],
-        expanded: false,
-    };
-    app_state.new_task_added = false;
-
-    if let Some(path) = get_selected_path(app_state) {
-        info!("adding new task");
-        if app_state.new_subtask_added {
-            info!("adding new sub task");
-            if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &path) {
-                parent_task.sub_tasks.push(new_task);
-                app_state.new_subtask_added = false;
-            }
-        } else {
-            info!("adding new root task, path: {:?}", path);
-            if path.len() > 1 {
-                // has a parent
-                let parent_path = path[0..path.len() - 1].to_vec();
-                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path) {
-                    parent_task.sub_tasks.push(new_task);
-                }
-            } else {
-                app_state.tasks.push(new_task);
-            }
-        }
-    } else {
-        error!("couldn't get task path!!");
-    }
-    app_state.save(PATH)?;
-    app_state.input.clear();
     Ok(())
 }
 
@@ -188,17 +145,73 @@ fn get_selected_path(app_state: &mut AppState) -> Option<Vec<usize>> {
         .map(|item| item.index_path.clone())
 }
 
-fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> FormAction {
+fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
     match key.code {
-        KeyCode::Char(c) => app_state.input.push(c),
-        KeyCode::Backspace => {
-            app_state.input.pop();
+        KeyCode::Char(c) => {
+            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
+                draft.description.push(c);
+            }
         }
-        KeyCode::Esc => return FormAction::Escape,
-        KeyCode::Enter => return FormAction::Submit,
+        KeyCode::Backspace => {
+            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
+                draft.description.pop();
+            }
+        }
+        KeyCode::Esc => {
+            remove_draft(&mut app_state.tasks);
+            app_state.new_task_added = false;
+        }
+        KeyCode::Enter => {
+            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
+                if draft.description.trim().is_empty() {
+                    remove_draft(&mut app_state.tasks);
+                } else {
+                    draft.is_draft = false;
+                }
+            }
+            app_state.new_task_added = false;
+            app_state.save(PATH)?
+        }
         _ => {}
     }
-    FormAction::None
+    Ok(())
+}
+
+fn find_draft_mut(tasks: &mut Vec<Task>) -> Option<&mut Task> {
+    for task in tasks.iter_mut() {
+        if task.is_draft {
+            return Some(task);
+        }
+        if let Some(draft) = find_draft_mut(&mut task.sub_tasks) {
+            return Some(draft);
+        }
+    }
+    None
+}
+
+fn jump_selection_to_draft(app_state: &mut AppState) {
+    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
+    if let Some(idx) = flat_tasks.iter().position(|item| item.task.is_draft) {
+        app_state.list_state.select(Some(idx));
+    }
+}
+
+fn remove_draft(tasks: &mut Vec<Task>) -> bool {
+    let mut to_remove = None;
+    for (i, task) in tasks.iter_mut().enumerate() {
+        if task.is_draft {
+            to_remove = Some(i);
+            break;
+        }
+        if remove_draft(&mut task.sub_tasks) {
+            return true;
+        }
+    }
+    if let Some(i) = to_remove {
+        tasks.remove(i);
+        return true;
+    }
+    false
 }
 
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
@@ -214,7 +227,25 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         }
         KeyCode::Char('k') => app_state.list_state.select_previous(),
         KeyCode::Char('j') => app_state.list_state.select_next(),
-        KeyCode::Char('a') => app_state.new_task_added = true,
+        KeyCode::Char('a') => {
+            let new_draft_task = Task::new_draft();
+            if let Some(path) = get_selected_path(app_state) {
+                if path.len() > 1 {
+                    // has a parent
+                    let parent_path = path[0..path.len() - 1].to_vec();
+                    if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path)
+                    {
+                        parent_task.sub_tasks.push(new_draft_task);
+                    }
+                } else {
+                    app_state.tasks.push(new_draft_task);
+                }
+            } else {
+                app_state.tasks.push(new_draft_task);
+            }
+            app_state.new_task_added = true;
+            jump_selection_to_draft(app_state);
+        }
         KeyCode::Char('d') => {
             if let Some(path) = get_selected_path(app_state) {
                 if path.len() == 1 {
@@ -239,8 +270,16 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('A') => {
-            app_state.new_task_added = true;
-            app_state.new_subtask_added = true;
+            let new_draft_task = Task::new_draft();
+
+            if let Some(path) = get_selected_path(app_state) {
+                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &path) {
+                    parent_task.sub_tasks.push(new_draft_task);
+                    parent_task.expanded = true;
+                    app_state.new_task_added = true;
+                    jump_selection_to_draft(app_state);
+                }
+            }
         }
         KeyCode::Enter => {
             if let Some(path) = get_selected_path(app_state) {
@@ -278,11 +317,29 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             .iter()
             .map(|item| {
                 let task = item.task;
+                let indent = "   ".repeat(item.depth);
 
-                let (icon, style) = if task.is_done {
-                    ("", Style::default().fg(COMPLETED_ROW_COLOR))
+                if task.is_draft {
+                    let line = Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(&task.description, Style::default().fg(Color::Yellow)),
+                        Span::styled("█", Style::default().fg(Color::White)),
+                    ]);
+                    return ListItem::new(line);
+                }
+
+                let (icon, style) = if task.sub_tasks.is_empty() {
+                    if task.is_done {
+                        ("", Style::default().fg(COMPLETED_ROW_COLOR))
+                    } else {
+                        ("", Style::default().fg(NORMAL_ROW_COLOR))
+                    }
                 } else {
-                    ("", Style::default().fg(NORMAL_ROW_COLOR))
+                    if task.expanded {
+                        ("", Style::default().fg(NORMAL_ROW_COLOR))
+                    } else {
+                        ("", Style::default().fg(NORMAL_ROW_COLOR))
+                    }
                 };
 
                 let desc_style = if task.is_done {
@@ -293,19 +350,10 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                     Style::default().fg(TEXT_COLOR)
                 };
 
-                let dropdown = if task.sub_tasks.is_empty() {
-                    " "
-                } else {
-                    if task.expanded { "" } else { "" }
-                };
-
                 if !task.sub_tasks.is_empty() {} //TODO: show task progress
-
-                let indent = "   ".repeat(item.depth);
 
                 let line = Line::from(vec![
                     Span::styled(indent, Style::default()),
-                    Span::styled(dropdown, Style::default().fg(Color::Gray)),
                     Span::styled(format!(" {} ", icon), style),
                     Span::styled(&task.description, desc_style),
                 ]);
@@ -350,38 +398,6 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, footer_area);
 
-    if app_state.new_task_added {
-        let popup_area = center_area(main_area, 60, 20);
-
-        frame.render_widget(Clear, popup_area);
-
-        let popup_block = Block::bordered()
-            .title(" Create New Task ")
-            .title_style(Style::default().add_modifier(Modifier::BOLD))
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Thick);
-
-        let input_text = Paragraph::new(app_state.input.as_str())
-            .wrap(Wrap { trim: true })
-            .block(popup_block);
-
-        frame.render_widget(input_text, popup_area);
-
-        let hint_area = Rect::new(
-            popup_area.x,
-            popup_area.y + popup_area.height,
-            popup_area.width,
-            1,
-        );
-        frame.render_widget(
-            Paragraph::new("Enter: Submit | Esc: Cancel")
-                .centered()
-                .fg(Color::DarkGray),
-            hint_area,
-        );
-    }
-
     // let log_widget = TuiLoggerWidget::default()
     //     .block(Block::default().title("Logs").borders(Borders::ALL))
     //     .style_error(Style::default().fg(Color::Red))
@@ -389,12 +405,4 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     //     .style_info(Style::default().fg(Color::Cyan));
 
     // frame.render_widget(log_widget, chunks[1]);
-}
-
-fn center_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
 }
