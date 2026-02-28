@@ -39,7 +39,6 @@ impl Task {
         }
     }
 }
-// fn flatten_tasks() {}
 
 #[derive(Debug, Default)]
 struct AppState {
@@ -214,13 +213,51 @@ fn remove_draft(tasks: &mut Vec<Task>) -> bool {
     false
 }
 
+fn get_parent_path(app_state: &mut AppState) -> Option<Vec<usize>> {
+    if let Some(path) = get_selected_path(app_state) {
+        if path.len() > 1 {
+            // has a parent
+            let parent_path = path[0..path.len() - 1].to_vec();
+
+            return Some(parent_path);
+        }
+    }
+    None
+}
+
+fn all_subtasks_done(task: &mut Task) -> bool {
+    if !task.sub_tasks.is_empty() {
+        for task in task.sub_tasks.iter() {
+            if !task.is_done {
+                return false;
+            }
+        }
+        return true;
+    }
+    false
+}
+
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => return true,
         KeyCode::Char(' ') => {
             if let Some(path) = get_selected_path(app_state) {
                 if let Some(task) = get_task_by_path(&mut app_state.tasks, &path) {
+                    if !task.sub_tasks.is_empty() {
+                        return false;
+                    }
                     task.is_done = !task.is_done;
+
+                    // updating parent task
+                    if let Some(parent_path) = get_parent_path(app_state) {
+                        if let Some(parent) = get_task_by_path(&mut app_state.tasks, &parent_path) {
+                            if all_subtasks_done(parent) {
+                                parent.is_done = true;
+                            } else {
+                                parent.is_done = false;
+                            }
+                        }
+                    }
                     let _ = app_state.save(PATH);
                 }
             }
@@ -229,20 +266,15 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Char('j') => app_state.list_state.select_next(),
         KeyCode::Char('a') => {
             let new_draft_task = Task::new_draft();
-            if let Some(path) = get_selected_path(app_state) {
-                if path.len() > 1 {
-                    // has a parent
-                    let parent_path = path[0..path.len() - 1].to_vec();
-                    if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path)
-                    {
-                        parent_task.sub_tasks.push(new_draft_task);
-                    }
-                } else {
-                    app_state.tasks.push(new_draft_task);
+
+            if let Some(parent_path) = get_parent_path(app_state) {
+                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path) {
+                    parent_task.sub_tasks.push(new_draft_task);
                 }
             } else {
                 app_state.tasks.push(new_draft_task);
             }
+
             app_state.new_task_added = true;
             jump_selection_to_draft(app_state);
         }
@@ -290,6 +322,30 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 }
             }
         }
+        KeyCode::Char('p') => {
+            // go to parent task
+            if let Some(parent_path) = get_parent_path(app_state) {
+                let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
+                if let Some(idx) = flat_tasks
+                    .iter()
+                    .position(|item| item.index_path == parent_path)
+                {
+                    app_state.list_state.select(Some(idx));
+                }
+            }
+        }
+        KeyCode::Char('P') => {
+            if let Some(path) = get_selected_path(app_state) {
+                if path.len() > 1 {
+                    let root = path[0..1].to_vec();
+
+                    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
+                    if let Some(idx) = flat_tasks.iter().position(|item| item.index_path == root) {
+                        app_state.list_state.select(Some(idx));
+                    }
+                }
+            }
+        }
         _ => {}
     }
     false
@@ -322,6 +378,12 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                 if task.is_draft {
                     let line = Line::from(vec![
                         Span::raw(indent),
+                        Span::styled(
+                            " > ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(&task.description, Style::default().fg(Color::Yellow)),
                         Span::styled("█", Style::default().fg(Color::White)),
                     ]);
@@ -350,15 +412,26 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                     Style::default().fg(TEXT_COLOR)
                 };
 
-                if !task.sub_tasks.is_empty() {} //TODO: show task progress
-
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(indent, Style::default()),
                     Span::styled(format!(" {} ", icon), style),
                     Span::styled(&task.description, desc_style),
-                ]);
+                ];
 
-                ListItem::new(line)
+                if !task.sub_tasks.is_empty() {
+                    let mut done_count: usize = 0;
+                    task.sub_tasks.iter().for_each(|item| {
+                        if item.is_done {
+                            done_count = done_count + 1;
+                        }
+                    });
+                    spans.push(Span::styled(
+                        format!("   ({}/{})", done_count, task.sub_tasks.len()),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
