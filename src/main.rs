@@ -222,12 +222,18 @@ fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
                         draft.is_draft = false;
                     }
                 }
-            } else if let Some(folder) = app_state.get_active_folder_mut() {
-                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
-                    if draft.description.trim().is_empty() {
-                        remove_draft(app_state);
-                    } else {
-                        draft.is_draft = false;
+            } else {
+                let path_opt = get_selected_path(app_state);
+                if let Some(folder) = app_state.get_active_folder_mut() {
+                    if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+                        if draft.description.trim().is_empty() {
+                            remove_draft(app_state);
+                        } else {
+                            draft.is_draft = false;
+                            if let Some(path) = path_opt {
+                                update_parent_completion(&mut folder.tasks, path);
+                            }
+                        }
                     }
                 }
             }
@@ -348,6 +354,8 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 app_state
                     .folder_state
                     .select(Some(app_state.folders.len() - 1));
+
+                app_state.new_item_added = true;
             } else {
                 let path_opt = get_selected_path(app_state);
 
@@ -399,6 +407,8 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                                 parent.sub_tasks.remove(child_idx);
                             }
                         }
+
+                        update_parent_completion(&mut folder.tasks, path);
                         let _ = app_state.save(PATH); // TODO: handle if error is returned here
 
                         // let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
