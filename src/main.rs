@@ -40,28 +40,68 @@ impl Task {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct Folder {
+    name: String,
+    tasks: Vec<Task>,
+    is_draft: bool,
+}
+
+impl Folder {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            tasks: vec![],
+            is_draft: false,
+        }
+    }
+
+    fn new_draft() -> Self {
+        Self {
+            name: String::new(),
+            tasks: vec![],
+            is_draft: true,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+enum Focus {
+    #[default]
+    Folders,
+    Tasks,
+}
+
 #[derive(Debug, Default)]
 struct AppState {
-    tasks: Vec<Task>,
-    list_state: ListState,
-    new_task_added: bool,
+    folders: Vec<Folder>,
+    folder_state: ListState,
+    task_state: ListState,
+    new_item_added: bool,
+    focus: Focus,
 }
 
 impl AppState {
     fn new() -> Self {
         let mut state = AppState::default();
         let result::Result::Ok(data) = fs::read_to_string(PATH) else {
-            state.tasks = vec![];
+            state.folders = vec![Folder::new("General".to_string())];
+            state.folder_state.select(Some(0));
             return state;
         };
-        let tasks = serde_json::from_str(&data).unwrap_or_else(|_| vec![]);
-        state.tasks = tasks;
+        state.folders = serde_json::from_str(&data)
+            .unwrap_or_else(|_| vec![Folder::new("General".to_string())]);
         state
     }
 
     fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(&self.tasks).unwrap();
+        let json = serde_json::to_string_pretty(&self.folders).unwrap();
         fs::write(path, json)
+    }
+
+    fn get_active_folder_mut(&mut self) -> Option<&mut Folder> {
+        let idx = self.folder_state.selected()?;
+        self.folders.get_mut(idx)
     }
 }
 
@@ -73,7 +113,7 @@ struct FlatItem<'a> {
 
 fn main() -> Result<()> {
     let mut state = AppState::new();
-    state.new_task_added = false;
+    state.new_item_added = false;
     color_eyre::install()?;
 
     tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
@@ -92,8 +132,8 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
         terminal.draw(|f| render(f, app_state))?;
 
         if let Event::Key(key) = event::read()? {
-            if app_state.new_task_added {
-                handle_new_task(key, app_state)?
+            if app_state.new_item_added {
+                handle_new_item(key, app_state)?
             } else {
                 if handle_key(key, app_state) {
                     break;
@@ -137,38 +177,61 @@ fn get_task_by_path<'a>(tasks: &'a mut Vec<Task>, path: &[usize]) -> Option<&'a 
 }
 
 fn get_selected_path(app_state: &mut AppState) -> Option<Vec<usize>> {
-    let flat_view = flatten_tasks(&app_state.tasks, 0, &[]);
-    let current_index = app_state.list_state.selected().unwrap_or(0);
+    let current_index = app_state.task_state.selected().unwrap_or(0);
+    let folder = app_state.get_active_folder_mut()?;
+    let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
     flat_view
         .get(current_index)
         .map(|item| item.index_path.clone())
 }
 
-fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
+fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
     match key.code {
         KeyCode::Char(c) => {
-            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
-                draft.description.push(c);
+            if app_state.focus == Focus::Folders {
+                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
+                    draft.name.push(c);
+                }
+            } else if let Some(folder) = app_state.get_active_folder_mut() {
+                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+                    draft.description.push(c);
+                }
             }
         }
         KeyCode::Backspace => {
-            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
-                draft.description.pop();
+            if app_state.focus == Focus::Folders {
+                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
+                    draft.name.pop();
+                }
+            } else if let Some(folder) = app_state.get_active_folder_mut() {
+                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+                    draft.description.pop();
+                }
             }
         }
         KeyCode::Esc => {
-            remove_draft(&mut app_state.tasks);
-            app_state.new_task_added = false;
+            remove_draft(app_state);
+            app_state.new_item_added = false;
         }
         KeyCode::Enter => {
-            if let Some(draft) = find_draft_mut(&mut app_state.tasks) {
-                if draft.description.trim().is_empty() {
-                    remove_draft(&mut app_state.tasks);
-                } else {
-                    draft.is_draft = false;
+            if app_state.focus == Focus::Folders {
+                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
+                    if draft.name.trim().is_empty() {
+                        remove_draft(app_state);
+                    } else {
+                        draft.is_draft = false;
+                    }
+                }
+            } else if let Some(folder) = app_state.get_active_folder_mut() {
+                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+                    if draft.description.trim().is_empty() {
+                        remove_draft(app_state);
+                    } else {
+                        draft.is_draft = false;
+                    }
                 }
             }
-            app_state.new_task_added = false;
+            app_state.new_item_added = false;
             app_state.save(PATH)?
         }
         _ => {}
@@ -189,20 +252,30 @@ fn find_draft_mut(tasks: &mut Vec<Task>) -> Option<&mut Task> {
 }
 
 fn jump_selection_to_draft(app_state: &mut AppState) {
-    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
-    if let Some(idx) = flat_tasks.iter().position(|item| item.task.is_draft) {
-        app_state.list_state.select(Some(idx));
+    if let Some(folder) = app_state.get_active_folder_mut() {
+        let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+        if let Some(idx) = flat_tasks.iter().position(|item| item.task.is_draft) {
+            app_state.task_state.select(Some(idx));
+        }
     }
 }
 
-fn remove_draft(tasks: &mut Vec<Task>) -> bool {
+fn remove_draft(app_state: &mut AppState) {
+    app_state.folders.retain(|f| !f.is_draft);
+
+    if let Some(folder) = app_state.get_active_folder_mut() {
+        remove_task_draft(&mut folder.tasks);
+    }
+}
+
+fn remove_task_draft(tasks: &mut Vec<Task>) -> bool {
     let mut to_remove = None;
     for (i, task) in tasks.iter_mut().enumerate() {
         if task.is_draft {
             to_remove = Some(i);
             break;
         }
-        if remove_draft(&mut task.sub_tasks) {
+        if remove_task_draft(&mut task.sub_tasks) {
             return true;
         }
     }
@@ -213,135 +286,196 @@ fn remove_draft(tasks: &mut Vec<Task>) -> bool {
     false
 }
 
-fn get_parent_path(app_state: &mut AppState) -> Option<Vec<usize>> {
-    if let Some(path) = get_selected_path(app_state) {
-        if path.len() > 1 {
-            // has a parent
-            let parent_path = path[0..path.len() - 1].to_vec();
-
-            return Some(parent_path);
+fn update_parent_completion(tasks: &mut Vec<Task>, mut path: Vec<usize>) {
+    while path.len() > 1 {
+        path.pop();
+        if let Some(parent) = get_task_by_path(tasks, &path) {
+            parent.is_done = parent.sub_tasks.iter().all(|t| t.is_done);
         }
     }
-    None
 }
 
-fn all_subtasks_done(task: &mut Task) -> bool {
-    if !task.sub_tasks.is_empty() {
-        for task in task.sub_tasks.iter() {
-            if !task.is_done {
-                return false;
-            }
-        }
-        return true;
+fn get_parent_path(path: Vec<usize>) -> Option<Vec<usize>> {
+    if path.len() > 1 {
+        // has a parent
+        let parent_path = path[0..path.len() - 1].to_vec();
+
+        return Some(parent_path);
     }
-    false
+
+    None
 }
 
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => return true,
+        KeyCode::Tab => {
+            app_state.focus = if app_state.focus == Focus::Folders {
+                Focus::Tasks
+            } else {
+                Focus::Folders
+            };
+        }
         KeyCode::Char(' ') => {
-            if let Some(path) = get_selected_path(app_state) {
-                if let Some(task) = get_task_by_path(&mut app_state.tasks, &path) {
-                    if !task.sub_tasks.is_empty() {
-                        return false;
-                    }
-                    task.is_done = !task.is_done;
-
-                    // updating parent task
-                    if let Some(parent_path) = get_parent_path(app_state) {
-                        if let Some(parent) = get_task_by_path(&mut app_state.tasks, &parent_path) {
-                            if all_subtasks_done(parent) {
-                                parent.is_done = true;
-                            } else {
-                                parent.is_done = false;
+            if app_state.focus == Focus::Tasks {
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
+                            if !task.sub_tasks.is_empty() {
+                                return false;
                             }
+                            task.is_done = !task.is_done;
+
+                            update_parent_completion(&mut folder.tasks, path);
+
+                            let _ = app_state.save(PATH); // TODO: handle if an error is returned here
                         }
                     }
-                    let _ = app_state.save(PATH);
                 }
             }
         }
-        KeyCode::Char('k') => app_state.list_state.select_previous(),
-        KeyCode::Char('j') => app_state.list_state.select_next(),
+        KeyCode::Char('k') => match app_state.focus {
+            Focus::Folders => app_state.folder_state.select_previous(),
+            Focus::Tasks => app_state.task_state.select_previous(),
+        },
+        KeyCode::Char('j') => match app_state.focus {
+            Focus::Folders => app_state.folder_state.select_next(),
+            Focus::Tasks => app_state.task_state.select_next(),
+        },
         KeyCode::Char('a') => {
-            let new_draft_task = Task::new_draft();
-
-            if let Some(parent_path) = get_parent_path(app_state) {
-                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &parent_path) {
-                    parent_task.sub_tasks.push(new_draft_task);
-                }
+            if app_state.focus == Focus::Folders {
+                app_state.folders.push(Folder::new_draft());
+                app_state
+                    .folder_state
+                    .select(Some(app_state.folders.len() - 1));
             } else {
-                app_state.tasks.push(new_draft_task);
-            }
+                let path_opt = get_selected_path(app_state);
 
-            app_state.new_task_added = true;
-            jump_selection_to_draft(app_state);
-        }
-        KeyCode::Char('d') => {
-            if let Some(path) = get_selected_path(app_state) {
-                if path.len() == 1 {
-                    app_state.tasks.remove(path[0]);
-                    let _ = app_state.save(PATH);
-                } else {
-                    let parent_path = &path[0..path.len() - 1];
-                    let child_idx = path[path.len() - 1];
-                    if let Some(parent) = get_task_by_path(&mut app_state.tasks, parent_path) {
-                        parent.sub_tasks.remove(child_idx);
+                if let Some(folder_idx) = app_state.folder_state.selected() {
+                    let folder = &mut app_state.folders[folder_idx];
+                    let new_draft_task = Task::new_draft();
+
+                    if let Some(path) = path_opt {
+                        if let Some(parent_path) = get_parent_path(path) {
+                            if let Some(parent_task) =
+                                get_task_by_path(&mut folder.tasks, &parent_path)
+                            {
+                                parent_task.sub_tasks.push(new_draft_task);
+                            }
+                        } else {
+                            folder.tasks.push(new_draft_task);
+                        }
+                    } else {
+                        folder.tasks.push(new_draft_task);
                     }
                 }
 
-                let flat_view = flatten_tasks(&app_state.tasks, 0, &[]);
-                let current_index = app_state.list_state.selected().unwrap_or(0);
-                // current index correction
-                if current_index >= flat_view.len().saturating_sub(1) {
-                    app_state
-                        .list_state
-                        .select(Some(flat_view.len().saturating_sub(2)));
+                app_state.new_item_added = true;
+                jump_selection_to_draft(app_state);
+            }
+        }
+        KeyCode::Char('d') => {
+            if app_state.focus == Focus::Folders {
+                if let Some(idx) = app_state.folder_state.selected() {
+                    app_state.folders.remove(idx);
+                    if app_state.folders.is_empty() {
+                        app_state.folder_state.select(None);
+                    } else if idx >= app_state.folders.len() {
+                        app_state
+                            .folder_state
+                            .select(Some(app_state.folders.len() - 1));
+                    }
+                    let _ = app_state.save(PATH);
+                }
+            } else {
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if path.len() == 1 {
+                            folder.tasks.remove(path[0]);
+                        } else {
+                            let parent_path = &path[0..path.len() - 1];
+                            let child_idx = path[path.len() - 1];
+                            if let Some(parent) = get_task_by_path(&mut folder.tasks, parent_path) {
+                                parent.sub_tasks.remove(child_idx);
+                            }
+                        }
+                        let _ = app_state.save(PATH); // TODO: handle if error is returned here
+
+                        // let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
+                        // let current_index = app_state.task_state.selected().unwrap_or(0);
+                        // // current index correction
+                        // if current_index >= flat_view.len().saturating_sub(1) {
+                        //     app_state
+                        //         .task_state
+                        //         .select(Some(flat_view.len().saturating_sub(2)));
+                        // }
+                    }
                 }
             }
         }
         KeyCode::Char('A') => {
-            let new_draft_task = Task::new_draft();
+            // add a sub-task
+            if app_state.focus == Focus::Tasks {
+                let new_draft_task = Task::new_draft();
 
-            if let Some(path) = get_selected_path(app_state) {
-                if let Some(parent_task) = get_task_by_path(&mut app_state.tasks, &path) {
-                    parent_task.sub_tasks.push(new_draft_task);
-                    parent_task.expanded = true;
-                    app_state.new_task_added = true;
-                    jump_selection_to_draft(app_state);
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if let Some(parent_task) = get_task_by_path(&mut folder.tasks, &path) {
+                            parent_task.sub_tasks.push(new_draft_task);
+                            parent_task.expanded = true;
+                            app_state.new_item_added = true;
+                            jump_selection_to_draft(app_state);
+                        }
+                    }
                 }
             }
         }
         KeyCode::Enter => {
-            if let Some(path) = get_selected_path(app_state) {
-                if let Some(task) = get_task_by_path(&mut app_state.tasks, &path) {
-                    if !task.sub_tasks.is_empty() {
-                        task.expanded = !task.expanded;
+            // expand a task
+            if app_state.focus == Focus::Tasks {
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
+                            if !task.sub_tasks.is_empty() {
+                                task.expanded = !task.expanded;
+                            }
+                        }
                     }
                 }
             }
         }
         KeyCode::Char('p') => {
             // go to parent task
-            if let Some(parent_path) = get_parent_path(app_state) {
-                let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
-                if let Some(idx) = flat_tasks
-                    .iter()
-                    .position(|item| item.index_path == parent_path)
-                {
-                    app_state.list_state.select(Some(idx));
+            if app_state.focus == Focus::Tasks {
+                let path_opt = get_selected_path(app_state);
+                if let Some(parent_path) = path_opt {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+                        if let Some(idx) = flat_tasks
+                            .iter()
+                            .position(|item| item.index_path == parent_path)
+                        {
+                            app_state.task_state.select(Some(idx));
+                        }
+                    }
                 }
             }
         }
         KeyCode::Char('P') => {
-            if let Some(path) = get_selected_path(app_state) {
-                if path.len() > 1 {
-                    let root = path[0..1].to_vec();
+            // go to root parent
+            if app_state.focus == Focus::Tasks {
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if path.len() > 1 {
+                            let root = path[0..1].to_vec();
 
-                    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
-                    if let Some(idx) = flat_tasks.iter().position(|item| item.index_path == root) {
-                        app_state.list_state.select(Some(idx));
+                            let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+                            if let Some(idx) =
+                                flat_tasks.iter().position(|item| item.index_path == root)
+                            {
+                                app_state.task_state.select(Some(idx));
+                            }
+                        }
                     }
                 }
             }
@@ -361,94 +495,149 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
 
     let [main_area, footer_area] = vertical.areas(frame.area());
 
-    let flat_tasks = flatten_tasks(&app_state.tasks, 0, &[]);
+    let horizontal = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)]);
+    let [folder_area, task_area] = horizontal.areas(main_area);
 
-    if flat_tasks.is_empty() {
-        let empty_msg = Paragraph::new("No tasks yet.\nPress 'a' to add one.")
-            .centered()
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(empty_msg, main_area);
+    // --- Render Folders ---
+    let folder_items: Vec<ListItem> = app_state
+        .folders
+        .iter()
+        .map(|f| {
+            if f.is_draft {
+                ListItem::new(Line::from(vec![
+                    Span::styled(" > ", Style::default().fg(Color::Yellow)),
+                    Span::styled(&f.name, Style::default().fg(Color::Yellow)),
+                    Span::styled("█", Style::default().fg(Color::White)),
+                ]))
+            } else {
+                ListItem::new(Line::from(vec![Span::raw(format!(" 󰉋 {}", f.name))]))
+            }
+        })
+        .collect();
+
+    let folder_border_color = if app_state.focus == Focus::Folders {
+        Color::Yellow
     } else {
-        let items: Vec<ListItem> = flat_tasks
-            .iter()
-            .map(|item| {
-                let task = item.task;
-                let indent = "   ".repeat(item.depth);
+        Color::DarkGray
+    };
+    let folder_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(folder_border_color))
+        .title(" Folders ");
 
-                if task.is_draft {
-                    let line = Line::from(vec![
-                        Span::raw(indent),
-                        Span::styled(
-                            " > ",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(&task.description, Style::default().fg(Color::Yellow)),
-                        Span::styled("█", Style::default().fg(Color::White)),
-                    ]);
-                    return ListItem::new(line);
-                }
+    let folder_list = List::new(folder_items)
+        .block(folder_block)
+        .highlight_style(HIGHLIGHT_STYLE);
 
-                let (icon, style) = if task.sub_tasks.is_empty() {
-                    if task.is_done {
-                        ("", Style::default().fg(COMPLETED_ROW_COLOR))
-                    } else {
-                        ("", Style::default().fg(NORMAL_ROW_COLOR))
-                    }
-                } else {
-                    if task.expanded {
-                        ("", Style::default().fg(NORMAL_ROW_COLOR))
-                    } else {
-                        ("", Style::default().fg(NORMAL_ROW_COLOR))
-                    }
-                };
+    frame.render_stateful_widget(folder_list, folder_area, &mut app_state.folder_state);
 
-                let desc_style = if task.is_done {
-                    Style::default()
-                        .fg(COMPLETED_ROW_COLOR)
-                        .add_modifier(Modifier::CROSSED_OUT)
-                } else {
-                    Style::default().fg(TEXT_COLOR)
-                };
+    // --Render Tasks--
+    let task_border_color = if app_state.focus == Focus::Tasks {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    let task_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(task_border_color))
+        .title(" Tasks ")
+        .padding(Padding::horizontal(1));
 
-                let mut spans = vec![
-                    Span::styled(indent, Style::default()),
-                    Span::styled(format!(" {} ", icon), style),
-                    Span::styled(&task.description, desc_style),
-                ];
+    if let Some(folder_idx) = app_state.folder_state.selected() {
+        if let Some(folder) = app_state.folders.get(folder_idx) {
+            let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
 
-                if !task.sub_tasks.is_empty() {
-                    let mut done_count: usize = 0;
-                    task.sub_tasks.iter().for_each(|item| {
-                        if item.is_done {
-                            done_count = done_count + 1;
+            if flat_tasks.is_empty() {
+                let empty_msg = Paragraph::new("No tasks yet.\nPress 'a' to add one.")
+                    .centered()
+                    .block(task_block)
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(empty_msg, task_area);
+            } else {
+                let items: Vec<ListItem> = flat_tasks
+                    .iter()
+                    .map(|item| {
+                        let task = item.task;
+                        let indent = "   ".repeat(item.depth);
+
+                        if task.is_draft {
+                            let line = Line::from(vec![
+                                Span::raw(indent),
+                                Span::styled(
+                                    " > ",
+                                    Style::default()
+                                        .fg(Color::Yellow)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(&task.description, Style::default().fg(Color::Yellow)),
+                                Span::styled("█", Style::default().fg(Color::White)),
+                            ]);
+                            return ListItem::new(line);
                         }
-                    });
-                    spans.push(Span::styled(
-                        format!("   ({}/{})", done_count, task.sub_tasks.len()),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
 
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
+                        let (icon, style) = if task.sub_tasks.is_empty() {
+                            if task.is_done {
+                                ("", Style::default().fg(COMPLETED_ROW_COLOR))
+                            } else {
+                                ("", Style::default().fg(NORMAL_ROW_COLOR))
+                            }
+                        } else {
+                            if task.expanded {
+                                ("", Style::default().fg(NORMAL_ROW_COLOR))
+                            } else {
+                                ("", Style::default().fg(NORMAL_ROW_COLOR))
+                            }
+                        };
 
-        let list_block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Tasks ")
-            .title_style(Style::default().fg(Color::Yellow))
-            .padding(Padding::horizontal(1));
+                        let desc_style = if task.is_done {
+                            Style::default()
+                                .fg(COMPLETED_ROW_COLOR)
+                                .add_modifier(Modifier::CROSSED_OUT)
+                        } else {
+                            Style::default().fg(TEXT_COLOR)
+                        };
 
-        let list = List::new(items)
-            .block(list_block)
-            .highlight_style(HIGHLIGHT_STYLE);
+                        let mut spans = vec![
+                            Span::styled(indent, Style::default()),
+                            Span::styled(format!(" {} ", icon), style),
+                            Span::styled(&task.description, desc_style),
+                        ];
 
-        frame.render_stateful_widget(list, main_area, &mut app_state.list_state);
+                        if !task.sub_tasks.is_empty() {
+                            let mut done_count: usize = 0;
+                            task.sub_tasks.iter().for_each(|item| {
+                                if item.is_done {
+                                    done_count = done_count + 1;
+                                }
+                            });
+                            spans.push(Span::styled(
+                                format!("  ({}/{})", done_count, task.sub_tasks.len()),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+
+                        ListItem::new(Line::from(spans))
+                    })
+                    .collect();
+
+                let list = List::new(items)
+                    .block(task_block)
+                    .highlight_style(HIGHLIGHT_STYLE);
+
+                frame.render_stateful_widget(list, task_area, &mut app_state.task_state);
+            }
+        }
+    } else {
+        // No folder selected
+        frame.render_widget(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(task_border_color)),
+            task_area,
+        );
     }
 
+    // --Footer--
     let help_text = Line::from(vec![
         Span::styled(
             "h - ",
