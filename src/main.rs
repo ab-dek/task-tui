@@ -458,14 +458,16 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             // go to parent task
             if app_state.focus == Focus::Tasks {
                 let path_opt = get_selected_path(app_state);
-                if let Some(parent_path) = path_opt {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
-                        if let Some(idx) = flat_tasks
-                            .iter()
-                            .position(|item| item.index_path == parent_path)
-                        {
-                            app_state.task_state.select(Some(idx));
+                if let Some(path) = path_opt {
+                    if let Some(parent_path) = get_parent_path(path) {
+                        if let Some(folder) = app_state.get_active_folder_mut() {
+                            let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+                            if let Some(idx) = flat_tasks
+                                .iter()
+                                .position(|item| item.index_path == parent_path)
+                            {
+                                app_state.task_state.select(Some(idx));
+                            }
                         }
                     }
                 }
