@@ -91,6 +91,12 @@ impl AppState {
         };
         state.folders = serde_json::from_str(&data)
             .unwrap_or_else(|_| vec![Folder::new("General".to_string())]);
+
+        if state.folders.is_empty() {
+            state.folders = vec![Folder::new("General".to_string())];
+        }
+
+        state.folder_state.select(Some(0));
         state
     }
 
@@ -516,14 +522,37 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         .iter()
         .map(|f| {
             if f.is_draft {
-                ListItem::new(Line::from(vec![
+                return ListItem::new(Line::from(vec![
                     Span::styled(" > ", Style::default().fg(Color::Yellow)),
                     Span::styled(&f.name, Style::default().fg(Color::Yellow)),
                     Span::styled("█", Style::default().fg(Color::White)),
-                ]))
-            } else {
-                ListItem::new(Line::from(vec![Span::raw(format!(" 󰉋 {}", f.name))]))
+                ]));
             }
+
+            let mut spans = vec![Span::raw(format!(" 󰉋 {}", f.name))];
+
+            if !f.tasks.is_empty() {
+                let mut done_count: usize = 0;
+                f.tasks.iter().for_each(|item| {
+                    if item.is_done {
+                        done_count += 1;
+                    }
+                });
+
+                let percentage_completion = (done_count as f64 / f.tasks.len() as f64) * 100.0;
+                let percentage_color = if percentage_completion < 100.0 {
+                    Color::DarkGray
+                } else {
+                    Color::Green
+                };
+
+                spans.push(Span::styled(
+                    format!(" ({}%)", percentage_completion),
+                    Style::default().fg(percentage_color),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
