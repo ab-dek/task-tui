@@ -2,10 +2,10 @@ use color_eyre::eyre::{Ok, Result};
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent},
-    layout::{Alignment, Constraint, Layout},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
@@ -65,11 +65,21 @@ impl Folder {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone)]
 enum Focus {
     #[default]
     Folders,
     Tasks,
+    Popup {
+        text: String,
+        on_option_confirm: fn(&mut AppState),
+    },
+}
+
+impl PartialEq for Focus {
+    fn eq(&self, other: &Self) -> bool {
+        core::mem::discriminant(self) == core::mem::discriminant(other)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -318,6 +328,20 @@ fn get_parent_path(path: Vec<usize>) -> Option<Vec<usize>> {
     None
 }
 
+fn delete_folder(app_state: &mut AppState) {
+    if let Some(idx) = app_state.folder_state.selected() {
+        app_state.folders.remove(idx);
+        if app_state.folders.is_empty() {
+            app_state.folder_state.select(None);
+        } else if idx >= app_state.folders.len() {
+            app_state
+                .folder_state
+                .select(Some(app_state.folders.len() - 1));
+        }
+        let _ = app_state.save(PATH);
+    }
+}
+
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => return true,
@@ -349,10 +373,12 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Char('k') => match app_state.focus {
             Focus::Folders => app_state.folder_state.select_previous(),
             Focus::Tasks => app_state.task_state.select_previous(),
+            _ => (),
         },
         KeyCode::Char('j') => match app_state.focus {
             Focus::Folders => app_state.folder_state.select_next(),
             Focus::Tasks => app_state.task_state.select_next(),
+            _ => (),
         },
         KeyCode::Char('a') => {
             if app_state.focus == Focus::Folders {
@@ -390,17 +416,11 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         }
         KeyCode::Char('d') => {
             if app_state.focus == Focus::Folders {
-                if let Some(idx) = app_state.folder_state.selected() {
-                    app_state.folders.remove(idx);
-                    if app_state.folders.is_empty() {
-                        app_state.folder_state.select(None);
-                    } else if idx >= app_state.folders.len() {
-                        app_state
-                            .folder_state
-                            .select(Some(app_state.folders.len() - 1));
-                    }
-                    let _ = app_state.save(PATH);
-                }
+                app_state.focus = Focus::Popup {
+                    text: "All task under this folder will also be deleted. Confirm Deletion"
+                        .to_string(),
+                    on_option_confirm: delete_folder,
+                };
             } else {
                 if let Some(path) = get_selected_path(app_state) {
                     if let Some(folder) = app_state.get_active_folder_mut() {
@@ -498,6 +518,17 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 }
             }
         }
+        KeyCode::Char('y') => {
+            if let Focus::Popup {
+                text,
+                on_option_confirm,
+            } = app_state.focus.clone()
+            {
+                _ = text;
+                on_option_confirm(app_state);
+                app_state.focus = Focus::Folders;
+            }
+        }
         _ => {}
     }
     false
@@ -562,7 +593,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         Color::DarkGray
     };
     let folder_block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::default().fg(folder_border_color))
         .title(" Folders ");
 
@@ -579,7 +610,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         Color::DarkGray
     };
     let task_block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::default().fg(task_border_color))
         .title(" Tasks ")
         .padding(Padding::horizontal(1));
@@ -672,10 +703,58 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         // No folder selected
         frame.render_widget(
             Block::bordered()
-                .border_type(BorderType::Rounded)
+                .border_type(BorderType::Plain)
                 .border_style(Style::default().fg(task_border_color)),
             task_area,
         );
+    }
+
+    // --popup area--
+    if let Focus::Popup {
+        text,
+        on_option_confirm,
+    } = app_state.focus.clone()
+    {
+        _ = on_option_confirm;
+
+        let popup_area = center_area(frame.area(), 50, 25);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let popup_block = Block::bordered()
+            .title(" Confirm Action ")
+            .title_alignment(Alignment::Center)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(Color::Yellow))
+            .padding(Padding::vertical(1));
+
+        let lines = vec![
+            Line::from(Span::styled(text, Style::default().fg(TEXT_COLOR))),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "'y'",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" - confirm | "),
+                Span::styled(
+                    "'esc'",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" - cancel."),
+            ]),
+        ];
+
+        let popup_paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(popup_block);
+
+        frame.render_widget(popup_paragraph, popup_area);
     }
 
     // --Footer--
@@ -708,4 +787,12 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     //     .style_info(Style::default().fg(Color::Cyan));
 
     // frame.render_widget(log_widget, chunks[1]);
+}
+
+fn center_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
 }
