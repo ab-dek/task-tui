@@ -5,14 +5,14 @@ use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    widgets::{Block, BorderType, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::result;
 
 const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
-const COMPLETED_ROW_COLOR: Color = Color::Rgb(100, 100, 100);
+const COMPLETED_ROW_COLOR: Color = Color::Rgb(150, 150, 150);
 const TEXT_COLOR: Color = Color::Rgb(255, 255, 255);
 const HIGHLIGHT_STYLE: Style = Style::new()
     .bg(Color::Rgb(60, 60, 60))
@@ -342,10 +342,28 @@ fn delete_folder(app_state: &mut AppState) {
     }
 }
 
+fn reset_folder(tasks: &mut Vec<Task>) {
+    for (_, task) in tasks.iter_mut().enumerate() {
+        if !task.sub_tasks.is_empty() {
+            reset_folder(&mut task.sub_tasks);
+        }
+        task.is_done = false;
+    }
+}
+
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => return true,
+        KeyCode::Esc | KeyCode::Char('q') => {
+            // exit/cancel
+            if app_state.focus == Focus::Folders || app_state.focus == Focus::Tasks {
+                return true;
+            } else {
+                // pop up area
+                app_state.focus = Focus::Folders;
+            }
+        }
         KeyCode::Tab => {
+            // switch between folder and task focus
             app_state.focus = if app_state.focus == Focus::Folders {
                 Focus::Tasks
             } else {
@@ -353,6 +371,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             };
         }
         KeyCode::Char(' ') => {
+            // toggle task completion
             if app_state.focus == Focus::Tasks {
                 if let Some(path) = get_selected_path(app_state) {
                     if let Some(folder) = app_state.get_active_folder_mut() {
@@ -371,16 +390,19 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('k') => match app_state.focus {
+            // move up
             Focus::Folders => app_state.folder_state.select_previous(),
             Focus::Tasks => app_state.task_state.select_previous(),
             _ => (),
         },
         KeyCode::Char('j') => match app_state.focus {
+            // move down
             Focus::Folders => app_state.folder_state.select_next(),
             Focus::Tasks => app_state.task_state.select_next(),
             _ => (),
         },
         KeyCode::Char('a') => {
+            // add a task
             if app_state.focus == Focus::Folders {
                 app_state.folders.push(Folder::new_draft());
                 app_state
@@ -415,13 +437,14 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('d') => {
+            // delete a folder or a task
             if app_state.focus == Focus::Folders {
                 app_state.focus = Focus::Popup {
                     text: "All task under this folder will also be deleted. Confirm Deletion"
                         .to_string(),
                     on_option_confirm: delete_folder,
                 };
-            } else {
+            } else if app_state.focus == Focus::Tasks {
                 if let Some(path) = get_selected_path(app_state) {
                     if let Some(folder) = app_state.get_active_folder_mut() {
                         if path.len() == 1 {
@@ -519,6 +542,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('y') => {
+            // confirm action for pop up menu
             if let Focus::Popup {
                 text,
                 on_option_confirm,
@@ -527,6 +551,15 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 _ = text;
                 on_option_confirm(app_state);
                 app_state.focus = Focus::Folders;
+            }
+        }
+        KeyCode::Char('r') => {
+            if app_state.focus == Focus::Folders {
+                // reset task status under a folder to undone
+
+                if let Some(folder) = app_state.get_active_folder_mut() {
+                    reset_folder(&mut folder.tasks);
+                }
             }
         }
         _ => {}
@@ -578,7 +611,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                 };
 
                 spans.push(Span::styled(
-                    format!(" ({}%)", percentage_completion),
+                    format!(" ({:.1}%)", percentage_completion),
                     Style::default().fg(percentage_color),
                 ));
             }
@@ -717,7 +750,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     {
         _ = on_option_confirm;
 
-        let popup_area = center_area(frame.area(), 50, 25);
+        let popup_area = center_area(frame.area(), 55, 10);
 
         frame.render_widget(ratatui::widgets::Clear, popup_area);
 
@@ -733,14 +766,14 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    "'y'",
+                    "y",
                     Style::default()
                         .fg(Color::Blue)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" - confirm | "),
                 Span::styled(
-                    "'esc'",
+                    "q/esc",
                     Style::default()
                         .fg(Color::Blue)
                         .add_modifier(Modifier::BOLD),
@@ -789,9 +822,9 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     // frame.render_widget(log_widget, chunks[1]);
 }
 
-fn center_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+fn center_area(area: Rect, width: u16, height: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center);
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
