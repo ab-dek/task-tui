@@ -70,6 +70,7 @@ enum Focus {
     #[default]
     Folders,
     Tasks,
+    Help,
     Popup {
         text: String,
         on_option_confirm: fn(&mut AppState),
@@ -367,6 +368,13 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             } else {
                 // pop up area
                 app_state.focus = Focus::Folders;
+            }
+        }
+        KeyCode::Char('h') => {
+            if app_state.focus == Focus::Help {
+                app_state.focus = Focus::Folders;
+            } else {
+                app_state.focus = Focus::Help;
             }
         }
         KeyCode::Tab => {
@@ -757,7 +765,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     {
         _ = on_option_confirm;
 
-        let popup_area = center_area(frame.area(), 55, 10);
+        let popup_area = center_area(frame.area(), 55, 8);
 
         frame.render_widget(ratatui::widgets::Clear, popup_area);
 
@@ -795,6 +803,48 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             .block(popup_block);
 
         frame.render_widget(popup_paragraph, popup_area);
+    }
+
+    // --Help Screen--
+    if app_state.focus == Focus::Help {
+        let help_area = center_area(frame.area(), 60, 22);
+
+        frame.render_widget(ratatui::widgets::Clear, help_area);
+
+        let help_block = Block::bordered()
+            .title(" Help / Keybindings ")
+            .title_alignment(Alignment::Center)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(Color::Cyan))
+            .padding(Padding::uniform(1));
+
+        let header_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+
+        let help_text = vec![
+            Line::from(Span::styled("Global", header_style)),
+            key_line("Tab", "Switch focus between Folders and Tasks"),
+            key_line("h", "Toggle this help screen"),
+            key_line("q/Esc", "Quit application / Close popups"),
+            Line::from(""),
+            Line::from(Span::styled("Navigation", header_style)),
+            key_line("j/k", "Move selection down / up"),
+            key_line("p", "Go to parent task"),
+            key_line("P", "Go to root parent task"),
+            Line::from(""),
+            Line::from(Span::styled("Actions", header_style)),
+            key_line("a", "Add a new folder or task"),
+            key_line("A", "Add a sub-task"),
+            key_line("Space", "Toggle task completion"),
+            key_line("Enter", "Expand/collapse sub-tasks"),
+            key_line("d", "Delete selected folder or task"),
+            key_line("r", "Reset all tasks in folder to undone"),
+        ];
+
+        let help_paragraph = Paragraph::new(help_text).block(help_block);
+
+        frame.render_widget(help_paragraph, help_area);
     }
 
     // --Footer--
@@ -835,4 +885,18 @@ fn center_area(area: Rect, width: u16, height: u16) -> Rect {
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
+}
+
+// Helper function to quickly format key/description pairs
+fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(
+            format!("{:>7} ", key),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("- "),
+        Span::styled(desc, Style::default().fg(TEXT_COLOR)),
+    ])
 }
