@@ -342,10 +342,17 @@ fn delete_folder(app_state: &mut AppState) {
     }
 }
 
-fn reset_folder(tasks: &mut Vec<Task>) {
+fn reset_folder(app_state: &mut AppState) {
+    if let Some(folder) = app_state.get_active_folder_mut() {
+        reset_tasks(&mut folder.tasks);
+    }
+    let _ = app_state.save(PATH);
+}
+
+fn reset_tasks(tasks: &mut Vec<Task>) {
     for (_, task) in tasks.iter_mut().enumerate() {
         if !task.sub_tasks.is_empty() {
-            reset_folder(&mut task.sub_tasks);
+            reset_tasks(&mut task.sub_tasks);
         }
         task.is_done = false;
     }
@@ -554,12 +561,12 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('r') => {
+            // reset task status under a folder to undone
             if app_state.focus == Focus::Folders {
-                // reset task status under a folder to undone
-
-                if let Some(folder) = app_state.get_active_folder_mut() {
-                    reset_folder(&mut folder.tasks);
-                }
+                app_state.focus = Focus::Popup {
+                    text: "All task under this folder will be set to undone. Confirm".to_string(),
+                    on_option_confirm: reset_folder,
+                };
             }
         }
         _ => {}
