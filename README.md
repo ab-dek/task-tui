@@ -10,6 +10,9 @@ Keyboard-driven TUI todo app. Built with [Ratatui](https://github.com/ratatui-or
 * Fast and easy keyboard navigation.
 * All data is automatically saved to and loaded from a local file.
 
+## Prerequisites
+[Nerd Font](https://www.nerdfonts.com/) installed and enabled in your terminal.
+
 ## Keybindings
 | Key | Action |
 | :--- | :--- |
