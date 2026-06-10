@@ -8,8 +8,12 @@ use ratatui::{
     widgets::{Block, BorderType, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
-use std::fs::{self};
-use std::result;
+use std::{
+    fs::{self},
+    path::PathBuf,
+    sync::LazyLock,
+};
+use std::{path::Path, result};
 
 const NORMAL_ROW_COLOR: Color = Color::Rgb(227, 227, 227);
 const COMPLETED_ROW_COLOR: Color = Color::Rgb(150, 150, 150);
@@ -17,7 +21,13 @@ const TEXT_COLOR: Color = Color::Rgb(255, 255, 255);
 const HIGHLIGHT_STYLE: Style = Style::new()
     .bg(Color::Rgb(60, 60, 60))
     .add_modifier(Modifier::BOLD);
-const PATH: &str = "./tasks.json";
+
+static DATA_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    dirs::data_dir()
+        .expect("could not determine data directory")
+        .join("todo")
+        .join("tasks.json")
+});
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Task {
@@ -94,8 +104,11 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
+        if let Some(parent) = DATA_PATH.parent() {
+            fs::create_dir_all(parent).ok();
+        }
         let mut state = AppState::default();
-        let result::Result::Ok(data) = fs::read_to_string(PATH) else {
+        let result::Result::Ok(data) = fs::read_to_string(&*DATA_PATH) else {
             state.folders = vec![Folder::new("General".to_string())];
             state.folder_state.select(Some(0));
             return state;
@@ -111,7 +124,7 @@ impl AppState {
         state
     }
 
-    fn save(&self, path: &str) -> std::io::Result<()> {
+    fn save(&self, path: &Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.folders).unwrap();
         fs::write(path, json)
     }
@@ -255,7 +268,7 @@ fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
                 }
             }
             app_state.new_item_added = false;
-            app_state.save(PATH)?
+            app_state.save(&*DATA_PATH)?
         }
         _ => {}
     }
@@ -339,7 +352,7 @@ fn delete_folder(app_state: &mut AppState) {
                 .folder_state
                 .select(Some(app_state.folders.len() - 1));
         }
-        let _ = app_state.save(PATH);
+        let _ = app_state.save(&*DATA_PATH);
     }
 }
 
@@ -347,7 +360,7 @@ fn reset_folder(app_state: &mut AppState) {
     if let Some(folder) = app_state.get_active_folder_mut() {
         reset_tasks(&mut folder.tasks);
     }
-    let _ = app_state.save(PATH);
+    let _ = app_state.save(&*DATA_PATH);
 }
 
 fn reset_tasks(tasks: &mut Vec<Task>) {
@@ -398,7 +411,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
 
                             update_parent_completion(&mut folder.tasks, path);
 
-                            let _ = app_state.save(PATH); // TODO: handle if an error is returned here
+                            let _ = app_state.save(&*DATA_PATH); // TODO: handle if an error is returned here
                         }
                     }
                 }
@@ -473,7 +486,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                         }
 
                         update_parent_completion(&mut folder.tasks, path);
-                        let _ = app_state.save(PATH); // TODO: handle if error is returned here
+                        let _ = app_state.save(&*DATA_PATH); // TODO: handle if error is returned here
 
                         // let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
                         // let current_index = app_state.task_state.selected().unwrap_or(0);

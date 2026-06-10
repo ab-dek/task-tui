@@ -1,0 +1,85 @@
+[
+  {
+    "name": "Daily",
+    "tasks": [
+      {
+        "is_done": false,
+        "description": "finish your user story",
+        "sub_tasks": [
+          {
+            "is_done": true,
+            "description": "fix the applicant card ",
+            "sub_tasks": [],
+            "expanded": false,
+            "is_draft": false
+          },
+          {
+            "is_done": true,
+            "description": "filters are not working, fix them",
+            "sub_tasks": [],
+            "expanded": false,
+            "is_draft": false
+          },
+          {
+            "is_done": true,
+            "description": "chip tag for skill filters",
+            "sub_tasks": [],
+            "expanded": false,
+            "is_draft": false
+          },
+          {
+            "is_done": false,
+            "description": "make filtering similar to the one used in positions list",
+            "sub_tasks": [],
+            "expanded": false,
+            "is_draft": false
+          }
+        ],
+        "expanded": false,
+        "is_draft": false
+      },
+      {
+        "is_done": false,
+        "description": "continue implementation of golox",
+        "sub_tasks": [],
+        "expanded": false,
+        "is_draft": false
+      },
+      {
+        "is_done": false,
+        "description": "start the microservice tutorial",
+        "sub_tasks": [],
+        "expanded": false,
+        "is_draft": false
+      }
+    ],
+    "is_draft": false
+  },
+  {
+    "name": "task-tui",
+    "tasks": [
+      {
+        "is_done": false,
+        "description": "make tasks editable",
+        "sub_tasks": [],
+        "expanded": false,
+        "is_draft": false
+      },
+      {
+        "is_done": false,
+        "description": "select functionality for tasks(visual mode)",
+        "sub_tasks": [],
+        "expanded": false,
+        "is_draft": false
+      },
+      {
+        "is_done": false,
+        "description": "copy and paste feature for task",
+        "sub_tasks": [],
+        "expanded": false,
+        "is_draft": false
+      }
+    ],
+    "is_draft": false
+  }
+]
