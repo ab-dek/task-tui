@@ -30,12 +30,14 @@ static DATA_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 });
 
 #[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(default)]
 struct Task {
     is_done: bool,
     description: String,
     sub_tasks: Vec<Task>,
     expanded: bool, // to display subtasks
     is_draft: bool,
+    editing: bool,
 }
 
 impl Task {
@@ -46,15 +48,18 @@ impl Task {
             sub_tasks: vec![],
             expanded: false,
             is_draft: true,
+            editing: false,
         }
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(default)]
 struct Folder {
     name: String,
     tasks: Vec<Task>,
     is_draft: bool,
+    editing: bool,
 }
 
 impl Folder {
@@ -63,6 +68,7 @@ impl Folder {
             name,
             tasks: vec![],
             is_draft: false,
+            editing: false,
         }
     }
 
@@ -71,6 +77,7 @@ impl Folder {
             name: String::new(),
             tasks: vec![],
             is_draft: true,
+            editing: false,
         }
     }
 }
@@ -99,6 +106,7 @@ struct AppState {
     folder_state: ListState,
     task_state: ListState,
     new_item_added: bool,
+    item_edit: bool,
     focus: Focus,
 }
 
@@ -113,8 +121,11 @@ impl AppState {
             state.folder_state.select(Some(0));
             return state;
         };
-        state.folders = serde_json::from_str(&data)
-            .unwrap_or_else(|_| vec![Folder::new("General".to_string())]);
+        state.folders = serde_json::from_str(&data).unwrap_or_else(|e| {
+            // TODO: add notifications during error
+            println!("Error parsing json: {}", e);
+            vec![Folder::new("General".to_string())]
+        });
 
         if state.folders.is_empty() {
             state.folders = vec![Folder::new("General".to_string())];
@@ -164,6 +175,8 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
         if let Event::Key(key) = event::read()? {
             if app_state.new_item_added {
                 handle_new_item(key, app_state)?
+            } else if app_state.item_edit {
+                edit_item(app_state, key)?
             } else {
                 if handle_key(key, app_state) {
                     break;
@@ -215,30 +228,29 @@ fn get_selected_path(app_state: &mut AppState) -> Option<Vec<usize>> {
         .map(|item| item.index_path.clone())
 }
 
-fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
+fn handle_text_manip(key: KeyEvent, text: &mut String) {
     match key.code {
         KeyCode::Char(c) => {
-            if app_state.focus == Focus::Folders {
-                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
-                    draft.name.push(c);
-                }
-            } else if let Some(folder) = app_state.get_active_folder_mut() {
-                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
-                    draft.description.push(c);
-                }
-            }
+            text.push(c);
         }
         KeyCode::Backspace => {
-            if app_state.focus == Focus::Folders {
-                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
-                    draft.name.pop();
-                }
-            } else if let Some(folder) = app_state.get_active_folder_mut() {
-                if let Some(draft) = find_draft_mut(&mut folder.tasks) {
-                    draft.description.pop();
-                }
-            }
+            text.pop();
         }
+        _ => {}
+    }
+}
+
+fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
+    if app_state.focus == Focus::Folders {
+        if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
+            handle_text_manip(key, &mut draft.name);
+        }
+    } else if let Some(folder) = app_state.get_active_folder_mut() {
+        if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+            handle_text_manip(key, &mut draft.description);
+        }
+    }
+    match key.code {
         KeyCode::Esc => {
             remove_draft(app_state);
             app_state.new_item_added = false;
@@ -271,6 +283,43 @@ fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
             app_state.save(&*DATA_PATH)?
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn edit_item(app_state: &mut AppState, key: KeyEvent) -> Result<()> {
+    if app_state.focus == Focus::Folders {
+        if let Some(idx) = app_state.folder_state.selected() {
+            if let Some(folder) = app_state.folders.get_mut(idx) {
+                handle_text_manip(key, &mut folder.name);
+                folder.editing = true;
+                match key.code {
+                    KeyCode::Enter | KeyCode::Esc => {
+                        folder.editing = false;
+                        app_state.item_edit = false;
+                        app_state.save(&*DATA_PATH)?
+                    }
+                    _ => {}
+                }
+            }
+        }
+    } else if app_state.focus == Focus::Tasks {
+        if let Some(path) = get_selected_path(app_state) {
+            if let Some(folder) = app_state.get_active_folder_mut() {
+                if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
+                    handle_text_manip(key, &mut task.description);
+                    task.editing = true;
+                    match key.code {
+                        KeyCode::Enter | KeyCode::Esc => {
+                            task.editing = false;
+                            app_state.item_edit = false;
+                            app_state.save(&*DATA_PATH)?
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -463,6 +512,9 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 app_state.new_item_added = true;
                 jump_selection_to_draft(app_state);
             }
+        }
+        KeyCode::Char('e') => {
+            app_state.item_edit = true;
         }
         KeyCode::Char('d') => {
             // delete a folder or a task
@@ -849,6 +901,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             Line::from(Span::styled("Actions", header_style)),
             key_line("a", "Add a new folder or task"),
             key_line("A", "Add a sub-task"),
+            key_line("e", "Edit an existing folder or task"),
             key_line("Space", "Toggle task completion"),
             key_line("Enter", "Expand/collapse sub-tasks"),
             key_line("d", "Delete selected folder or task"),

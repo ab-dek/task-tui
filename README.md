@@ -22,6 +22,7 @@ Keyboard-driven TUI todo app. Built with [Ratatui](https://github.com/ratatui-or
 | <kbd>Enter</kbd> | Expand or collapse sub-tasks |
 | <kbd>a</kbd> | Add a new folder or task |
 | <kbd>A</kbd> | Add a sub-task to the currently selected task |
+| <kbd>e</kbd> | Edit the currently selected folder or task |
 | <kbd>Space</kbd> | Toggle task completion (automatically updates parent task progress) |
 | <kbd>d</kbd> | Delete the currently selected folder or task |
 | <kbd>r</kbd> | Reset all tasks in the currently selected folder to undone |
