@@ -177,7 +177,11 @@ fn run(mut terminal: DefaultTerminal, app_state: &mut AppState) -> Result<()> {
 
         if let Event::Key(key) = event::read()? {
             if app_state.new_item_added {
-                handle_new_item(key, app_state)?
+                match app_state.focus {
+                    Focus::Folders => handle_new_folder(key, app_state)?,
+                    Focus::Tasks => handle_new_task(key, app_state)?,
+                    _ => (),
+                };
             } else if app_state.item_edit {
                 edit_item(app_state, key)?
             } else {
@@ -252,42 +256,65 @@ fn handle_text_manip(key: KeyEvent, text: &mut String) {
     }
 }
 
-fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
-    if app_state.focus == Focus::Folders {
-        if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
-            handle_text_manip(key, &mut draft.name);
-        }
-    } else if let Some(folder) = app_state.get_active_folder_mut() {
-        if let Some(draft) = find_draft_mut(&mut folder.tasks) {
-            handle_text_manip(key, &mut draft.description);
-        }
-    }
+fn handle_new_folder(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
+    let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) else {
+        app_state.new_item_added = false;
+        return Ok(());
+    };
+
+    handle_text_manip(key, &mut draft.name);
+
     match key.code {
         KeyCode::Esc => {
             remove_draft(app_state);
             app_state.new_item_added = false;
         }
         KeyCode::Enter => {
-            if app_state.focus == Focus::Folders {
-                if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
-                    if draft.name.trim().is_empty() {
-                        remove_draft(app_state);
-                    } else {
-                        draft.is_draft = false;
-                    }
+            if let Some(draft) = app_state.folders.iter_mut().find(|f| f.is_draft) {
+                if draft.name.trim().is_empty() {
+                    remove_draft(app_state);
+                } else {
+                    draft.is_draft = false;
                 }
-            } else {
-                let path_opt = get_selected_path(app_state);
-                if let Some(folder) = app_state.get_active_folder_mut() {
-                    if let Some(draft) = find_draft_mut(&mut folder.tasks) {
-                        if draft.description.trim().is_empty() {
-                            remove_draft(app_state);
-                        } else {
-                            draft.is_draft = false;
-                            if let Some(path) = path_opt {
-                                update_parent_completion(&mut folder.tasks, path);
-                            }
-                        }
+            }
+            app_state.new_item_added = false;
+            app_state.save(&*DATA_PATH)?
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_new_task(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
+    let Some(folder) = app_state.get_active_folder_mut() else {
+        app_state.new_item_added = false;
+        return Ok(());
+    };
+    let Some(draft) = find_draft_mut(&mut folder.tasks) else {
+        app_state.new_item_added = false;
+        return Ok(());
+    };
+
+    handle_text_manip(key, &mut draft.description);
+
+    match key.code {
+        KeyCode::Esc => {
+            remove_draft(app_state);
+            app_state.new_item_added = false;
+        }
+        KeyCode::Enter => {
+            let path_opt = get_selected_path(app_state);
+            let Some(folder) = app_state.get_active_folder_mut() else {
+                app_state.new_item_added = false;
+                return Ok(());
+            };
+            if let Some(draft) = find_draft_mut(&mut folder.tasks) {
+                if draft.description.trim().is_empty() {
+                    remove_draft(app_state);
+                } else {
+                    draft.is_draft = false;
+                    if let Some(path) = path_opt {
+                        update_parent_completion(&mut folder.tasks, path);
                     }
                 }
             }
@@ -512,18 +539,18 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                 };
                 let new_draft_task = Task::new_draft();
 
-                let Some(path) = path_opt else {
+                if let Some(path) = path_opt {
+                    if let Some(parent_path) = get_parent_path(path) {
+                        if let Some(parent_task) =
+                            get_task_in_vec_mut(&mut folder.tasks, &parent_path)
+                        {
+                            parent_task.sub_tasks.push(new_draft_task);
+                        }
+                    } else {
+                        folder.tasks.push(new_draft_task);
+                    }
+                } else {
                     folder.tasks.push(new_draft_task);
-                    return false;
-                };
-
-                let Some(parent_path) = get_parent_path(path) else {
-                    folder.tasks.push(new_draft_task);
-                    return false;
-                };
-
-                if let Some(parent_task) = get_task_in_vec_mut(&mut folder.tasks, &parent_path) {
-                    parent_task.sub_tasks.push(new_draft_task);
                 }
 
                 app_state.new_item_added = true;
