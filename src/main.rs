@@ -148,7 +148,10 @@ impl AppState {
 
 struct FlatItem<'a> {
     task: &'a Task,
-    depth: usize,
+    depth: usize, // depth of the task in the task tree
+
+    // index path from the root task tree to this task
+    // e.g. `[0, 2, 1]` means `tasks[0].sub_tasks[2].sub_tasks[1]`
     index_path: Vec<usize>,
 }
 
@@ -493,7 +496,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             _ => (),
         },
         KeyCode::Char('a') => {
-            // add a task
+            // add an item
             if app_state.focus == Focus::Folders {
                 app_state.folders.push(Folder::new_draft());
                 app_state
@@ -504,23 +507,23 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             } else {
                 let path_opt = get_selected_path(app_state);
 
-                if let Some(folder_idx) = app_state.folder_state.selected() {
-                    let folder = &mut app_state.folders[folder_idx];
-                    let new_draft_task = Task::new_draft();
+                let Some(folder) = app_state.get_active_folder_mut() else {
+                    return false;
+                };
+                let new_draft_task = Task::new_draft();
 
-                    if let Some(path) = path_opt {
-                        if let Some(parent_path) = get_parent_path(path) {
-                            if let Some(parent_task) =
-                                get_task_in_vec_mut(&mut folder.tasks, &parent_path)
-                            {
-                                parent_task.sub_tasks.push(new_draft_task);
-                            }
-                        } else {
-                            folder.tasks.push(new_draft_task);
-                        }
-                    } else {
-                        folder.tasks.push(new_draft_task);
-                    }
+                let Some(path) = path_opt else {
+                    folder.tasks.push(new_draft_task);
+                    return false;
+                };
+
+                let Some(parent_path) = get_parent_path(path) else {
+                    folder.tasks.push(new_draft_task);
+                    return false;
+                };
+
+                if let Some(parent_task) = get_task_in_vec_mut(&mut folder.tasks, &parent_path) {
+                    parent_task.sub_tasks.push(new_draft_task);
                 }
 
                 app_state.new_item_added = true;
@@ -528,6 +531,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('e') => {
+            // edit an item
             if app_state.focus == Focus::Folders {
                 if let Some(folder) = app_state.get_active_folder_mut() {
                     folder.editing = true;
@@ -548,33 +552,33 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                     on_option_confirm: delete_folder,
                 };
             } else if app_state.focus == Focus::Tasks {
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if path.len() == 1 {
-                            folder.tasks.remove(path[0]);
-                        } else {
-                            let parent_path = &path[0..path.len() - 1];
-                            let child_idx = path[path.len() - 1];
-                            if let Some(parent) =
-                                get_task_in_vec_mut(&mut folder.tasks, parent_path)
-                            {
-                                parent.sub_tasks.remove(child_idx);
-                            }
-                        }
-
-                        update_parent_completion(&mut folder.tasks, path);
-                        let _ = app_state.save(&*DATA_PATH); // TODO: handle if error is returned here
-
-                        // let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
-                        // let current_index = app_state.task_state.selected().unwrap_or(0);
-                        // // current index correction
-                        // if current_index >= flat_view.len().saturating_sub(1) {
-                        //     app_state
-                        //         .task_state
-                        //         .select(Some(flat_view.len().saturating_sub(2)));
-                        // }
+                let Some(path) = get_selected_path(app_state) else {
+                    return false;
+                };
+                let Some(folder) = app_state.get_active_folder_mut() else {
+                    return false;
+                };
+                if path.len() == 1 {
+                    folder.tasks.remove(path[0]);
+                } else {
+                    let parent_path = &path[0..path.len() - 1];
+                    let child_idx = path[path.len() - 1];
+                    if let Some(parent) = get_task_in_vec_mut(&mut folder.tasks, parent_path) {
+                        parent.sub_tasks.remove(child_idx);
                     }
                 }
+
+                update_parent_completion(&mut folder.tasks, path);
+                let _ = app_state.save(&*DATA_PATH); // TODO: handle if error is returned here
+
+                // let flat_view = flatten_tasks(&folder.tasks, 0, &[]);
+                // let current_index = app_state.task_state.selected().unwrap_or(0);
+                // // current index correction
+                // if current_index >= flat_view.len().saturating_sub(1) {
+                //     app_state
+                //         .task_state
+                //         .select(Some(flat_view.len().saturating_sub(2)));
+                // }
             }
         }
         KeyCode::Char('A') => {
@@ -593,47 +597,50 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Enter => {
             // expand a task
             if app_state.focus == Focus::Tasks {
-                if let Some(task) = get_selected_task_mut(app_state) {
-                    if !task.sub_tasks.is_empty() {
-                        task.expanded = !task.expanded;
-                    }
+                let Some(task) = get_selected_task_mut(app_state) else {
+                    return false;
+                };
+                if !task.sub_tasks.is_empty() {
+                    task.expanded = !task.expanded;
                 }
             }
         }
         KeyCode::Char('p') => {
             // go to parent task
             if app_state.focus == Focus::Tasks {
-                let path_opt = get_selected_path(app_state);
-                if let Some(path) = path_opt {
-                    if let Some(parent_path) = get_parent_path(path) {
-                        if let Some(folder) = app_state.get_active_folder_mut() {
-                            let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
-                            if let Some(idx) = flat_tasks
-                                .iter()
-                                .position(|item| item.index_path == parent_path)
-                            {
-                                app_state.task_state.select(Some(idx));
-                            }
-                        }
-                    }
+                let Some(path) = get_selected_path(app_state) else {
+                    return false;
+                };
+                let Some(parent_path) = get_parent_path(path) else {
+                    return false;
+                };
+                let Some(folder) = app_state.get_active_folder_mut() else {
+                    return false;
+                };
+                let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+                if let Some(idx) = flat_tasks
+                    .iter()
+                    .position(|item| item.index_path == parent_path)
+                {
+                    app_state.task_state.select(Some(idx));
                 }
             }
         }
         KeyCode::Char('P') => {
             // go to root parent
             if app_state.focus == Focus::Tasks {
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if path.len() > 1 {
-                            let root = path[0..1].to_vec();
+                let Some(path) = get_selected_path(app_state) else {
+                    return false;
+                };
+                let Some(folder) = app_state.get_active_folder_mut() else {
+                    return false;
+                };
+                if path.len() > 1 {
+                    let root = path[0..1].to_vec();
 
-                            let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
-                            if let Some(idx) =
-                                flat_tasks.iter().position(|item| item.index_path == root)
-                            {
-                                app_state.task_state.select(Some(idx));
-                            }
-                        }
+                    let flat_tasks = flatten_tasks(&folder.tasks, 0, &[]);
+                    if let Some(idx) = flat_tasks.iter().position(|item| item.index_path == root) {
+                        app_state.task_state.select(Some(idx));
                     }
                 }
             }
@@ -681,40 +688,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
     let folder_items: Vec<ListItem> = app_state
         .folders
         .iter()
-        .map(|f| {
-            if f.is_draft || f.editing {
-                return ListItem::new(Line::from(vec![
-                    Span::styled(" > ", Style::default().fg(Color::Yellow)),
-                    Span::styled(&f.name, Style::default().fg(Color::Yellow)),
-                    Span::styled("█", Style::default().fg(Color::White)),
-                ]));
-            }
-
-            let mut spans = vec![Span::raw(format!(" 󰉋 {}", f.name))];
-
-            if !f.tasks.is_empty() {
-                let mut done_count: usize = 0;
-                f.tasks.iter().for_each(|item| {
-                    if item.is_done {
-                        done_count += 1;
-                    }
-                });
-
-                let percentage_completion = (done_count as f64 / f.tasks.len() as f64) * 100.0;
-                let percentage_color = if percentage_completion < 100.0 {
-                    Color::DarkGray
-                } else {
-                    Color::Green
-                };
-
-                spans.push(Span::styled(
-                    format!(" ({:.1}%)", percentage_completion),
-                    Style::default().fg(percentage_color),
-                ));
-            }
-
-            ListItem::new(Line::from(spans))
-        })
+        .map(|f| get_folder_list_items(f))
         .collect();
 
     let folder_border_color = if app_state.focus == Focus::Folders {
@@ -758,68 +732,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
             } else {
                 let items: Vec<ListItem> = flat_tasks
                     .iter()
-                    .map(|item| {
-                        let task = item.task;
-                        let indent = "   ".repeat(item.depth);
-
-                        if task.is_draft || task.editing {
-                            let line = Line::from(vec![
-                                Span::raw(indent),
-                                Span::styled(
-                                    " > ",
-                                    Style::default()
-                                        .fg(Color::Yellow)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(&task.description, Style::default().fg(Color::Yellow)),
-                                Span::styled("█", Style::default().fg(Color::White)),
-                            ]);
-                            return ListItem::new(line);
-                        }
-
-                        let (icon, style) = if task.sub_tasks.is_empty() {
-                            if task.is_done {
-                                ("", Style::default().fg(COMPLETED_ROW_COLOR))
-                            } else {
-                                ("", Style::default().fg(NORMAL_ROW_COLOR))
-                            }
-                        } else {
-                            if task.expanded {
-                                ("", Style::default().fg(NORMAL_ROW_COLOR))
-                            } else {
-                                ("", Style::default().fg(NORMAL_ROW_COLOR))
-                            }
-                        };
-
-                        let desc_style = if task.is_done {
-                            Style::default()
-                                .fg(COMPLETED_ROW_COLOR)
-                                .add_modifier(Modifier::CROSSED_OUT)
-                        } else {
-                            Style::default().fg(TEXT_COLOR)
-                        };
-
-                        let mut spans = vec![
-                            Span::styled(indent, Style::default()),
-                            Span::styled(format!(" {} ", icon), style),
-                            Span::styled(&task.description, desc_style),
-                        ];
-
-                        if !task.sub_tasks.is_empty() {
-                            let mut done_count: usize = 0;
-                            task.sub_tasks.iter().for_each(|item| {
-                                if item.is_done {
-                                    done_count = done_count + 1;
-                                }
-                            });
-                            spans.push(Span::styled(
-                                format!("  ({}/{})", done_count, task.sub_tasks.len()),
-                                Style::default().fg(Color::DarkGray),
-                            ));
-                        }
-
-                        ListItem::new(Line::from(spans))
-                    })
+                    .map(|item| get_task_list_item(item))
                     .collect();
 
                 let list = List::new(items)
@@ -982,4 +895,102 @@ fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         Span::raw("- "),
         Span::styled(desc, Style::default().fg(TEXT_COLOR)),
     ])
+}
+
+fn get_folder_list_items<'a>(folder: &'a Folder) -> ListItem<'a> {
+    if folder.is_draft || folder.editing {
+        return ListItem::new(Line::from(vec![
+            Span::styled(" > ", Style::default().fg(Color::Yellow)),
+            Span::styled(&folder.name, Style::default().fg(Color::Yellow)),
+            Span::styled("█", Style::default().fg(Color::White)),
+        ]));
+    }
+
+    let mut spans = vec![Span::raw(format!(" 󰉋 {}", folder.name))];
+
+    if !folder.tasks.is_empty() {
+        let mut done_count: usize = 0;
+        folder.tasks.iter().for_each(|item| {
+            if item.is_done {
+                done_count += 1;
+            }
+        });
+
+        let percentage_completion = (done_count as f64 / folder.tasks.len() as f64) * 100.0;
+        let percentage_color = if percentage_completion < 100.0 {
+            Color::DarkGray
+        } else {
+            Color::Green
+        };
+
+        spans.push(Span::styled(
+            format!(" ({:.1}%)", percentage_completion),
+            Style::default().fg(percentage_color),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+fn get_task_list_item<'a>(item: &'a FlatItem) -> ListItem<'a> {
+    let task = item.task;
+    let indent = "   ".repeat(item.depth);
+
+    if task.is_draft || task.editing {
+        let line = Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                " > ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(&task.description, Style::default().fg(Color::Yellow)),
+            Span::styled("█", Style::default().fg(Color::White)),
+        ]);
+        return ListItem::new(line);
+    }
+
+    let (icon, style) = if task.sub_tasks.is_empty() {
+        if task.is_done {
+            ("", Style::default().fg(COMPLETED_ROW_COLOR))
+        } else {
+            ("", Style::default().fg(NORMAL_ROW_COLOR))
+        }
+    } else {
+        if task.expanded {
+            ("", Style::default().fg(NORMAL_ROW_COLOR))
+        } else {
+            ("", Style::default().fg(NORMAL_ROW_COLOR))
+        }
+    };
+
+    let desc_style = if task.is_done {
+        Style::default()
+            .fg(COMPLETED_ROW_COLOR)
+            .add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        Style::default().fg(TEXT_COLOR)
+    };
+
+    let mut spans = vec![
+        Span::styled(indent, Style::default()),
+        Span::styled(format!(" {} ", icon), style),
+        Span::styled(&task.description, desc_style),
+    ];
+
+    if !task.sub_tasks.is_empty() {
+        let mut done_count: usize = 0;
+        task.sub_tasks.iter().for_each(|item| {
+            if item.is_done {
+                done_count = done_count + 1;
+            }
+        });
+        spans.push(Span::styled(
+            format!("  ({}/{})", done_count, task.sub_tasks.len()),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
 }
