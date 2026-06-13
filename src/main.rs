@@ -514,6 +514,21 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('e') => {
+            if app_state.focus == Focus::Folders {
+                if let Some(idx) = app_state.folder_state.selected() {
+                    if let Some(folder) = app_state.folders.get_mut(idx) {
+                        folder.editing = true;
+                    }
+                }
+            } else if app_state.focus == Focus::Tasks {
+                if let Some(path) = get_selected_path(app_state) {
+                    if let Some(folder) = app_state.get_active_folder_mut() {
+                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
+                            task.editing = true;
+                        }
+                    }
+                }
+            }
             app_state.item_edit = true;
         }
         KeyCode::Char('d') => {
@@ -665,7 +680,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
         .folders
         .iter()
         .map(|f| {
-            if f.is_draft {
+            if f.is_draft || f.editing {
                 return ListItem::new(Line::from(vec![
                     Span::styled(" > ", Style::default().fg(Color::Yellow)),
                     Span::styled(&f.name, Style::default().fg(Color::Yellow)),
@@ -745,7 +760,7 @@ fn render(frame: &mut Frame, app_state: &mut AppState) {
                         let task = item.task;
                         let indent = "   ".repeat(item.depth);
 
-                        if task.is_draft {
+                        if task.is_draft || task.editing {
                             let line = Line::from(vec![
                                 Span::raw(indent),
                                 Span::styled(
