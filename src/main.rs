@@ -208,7 +208,7 @@ fn flatten_tasks<'a>(tasks: &'a [Task], depth: usize, current_path: &[usize]) ->
     flat_list
 }
 
-fn get_task_by_path<'a>(tasks: &'a mut Vec<Task>, path: &[usize]) -> Option<&'a mut Task> {
+fn get_task_in_vec_mut<'a>(tasks: &'a mut Vec<Task>, path: &[usize]) -> Option<&'a mut Task> {
     if path.is_empty() {
         return None;
     }
@@ -217,6 +217,15 @@ fn get_task_by_path<'a>(tasks: &'a mut Vec<Task>, path: &[usize]) -> Option<&'a 
         current = current.sub_tasks.get_mut(idx)?;
     }
     Some(current)
+}
+
+fn get_selected_task_mut<'a>(app_state: &'a mut AppState) -> Option<&'a mut Task> {
+    if let Some(path) = get_selected_path(app_state) {
+        if let Some(folder) = app_state.get_active_folder_mut() {
+            return get_task_in_vec_mut(&mut folder.tasks, &path);
+        }
+    }
+    None
 }
 
 fn get_selected_path(app_state: &mut AppState) -> Option<Vec<usize>> {
@@ -289,35 +298,29 @@ fn handle_new_item(key: KeyEvent, app_state: &mut AppState) -> Result<()> {
 
 fn edit_item(app_state: &mut AppState, key: KeyEvent) -> Result<()> {
     if app_state.focus == Focus::Folders {
-        if let Some(idx) = app_state.folder_state.selected() {
-            if let Some(folder) = app_state.folders.get_mut(idx) {
-                handle_text_manip(key, &mut folder.name);
-                folder.editing = true;
-                match key.code {
-                    KeyCode::Enter | KeyCode::Esc => {
-                        folder.editing = false;
-                        app_state.item_edit = false;
-                        app_state.save(&*DATA_PATH)?
-                    }
-                    _ => {}
+        if let Some(folder) = app_state.get_active_folder_mut() {
+            handle_text_manip(key, &mut folder.name);
+            folder.editing = true;
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    folder.editing = false;
+                    app_state.item_edit = false;
+                    app_state.save(&*DATA_PATH)?
                 }
+                _ => {}
             }
         }
     } else if app_state.focus == Focus::Tasks {
-        if let Some(path) = get_selected_path(app_state) {
-            if let Some(folder) = app_state.get_active_folder_mut() {
-                if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
-                    handle_text_manip(key, &mut task.description);
-                    task.editing = true;
-                    match key.code {
-                        KeyCode::Enter | KeyCode::Esc => {
-                            task.editing = false;
-                            app_state.item_edit = false;
-                            app_state.save(&*DATA_PATH)?
-                        }
-                        _ => {}
-                    }
+        if let Some(task) = get_selected_task_mut(app_state) {
+            handle_text_manip(key, &mut task.description);
+            task.editing = true;
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    task.editing = false;
+                    app_state.item_edit = false;
+                    app_state.save(&*DATA_PATH)?
                 }
+                _ => {}
             }
         }
     }
@@ -374,7 +377,7 @@ fn remove_task_draft(tasks: &mut Vec<Task>) -> bool {
 fn update_parent_completion(tasks: &mut Vec<Task>, mut path: Vec<usize>) {
     while path.len() > 1 {
         path.pop();
-        if let Some(parent) = get_task_by_path(tasks, &path) {
+        if let Some(parent) = get_task_in_vec_mut(tasks, &path) {
             parent.is_done = parent.sub_tasks.iter().all(|t| t.is_done);
         }
     }
@@ -421,6 +424,30 @@ fn reset_tasks(tasks: &mut Vec<Task>) {
     }
 }
 
+fn handle_task_completion(app_state: &mut AppState) -> bool {
+    let Some(path) = get_selected_path(app_state) else {
+        return false;
+    };
+    let Some(folder) = app_state.get_active_folder_mut() else {
+        return false;
+    };
+    let Some(task) = get_task_in_vec_mut(&mut folder.tasks, &path) else {
+        return false;
+    };
+    if !task.sub_tasks.is_empty() {
+        return false;
+    }
+
+    task.is_done = !task.is_done;
+    update_parent_completion(&mut folder.tasks, path);
+
+    if let Err(e) = app_state.save(&*DATA_PATH) {
+        eprintln!("Failed to save state: {}", e);
+    }
+
+    false
+}
+
 fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -450,20 +477,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         KeyCode::Char(' ') => {
             // toggle task completion
             if app_state.focus == Focus::Tasks {
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
-                            if !task.sub_tasks.is_empty() {
-                                return false;
-                            }
-                            task.is_done = !task.is_done;
-
-                            update_parent_completion(&mut folder.tasks, path);
-
-                            let _ = app_state.save(&*DATA_PATH); // TODO: handle if an error is returned here
-                        }
-                    }
-                }
+                return handle_task_completion(app_state);
             }
         }
         KeyCode::Char('k') => match app_state.focus {
@@ -497,7 +511,7 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                     if let Some(path) = path_opt {
                         if let Some(parent_path) = get_parent_path(path) {
                             if let Some(parent_task) =
-                                get_task_by_path(&mut folder.tasks, &parent_path)
+                                get_task_in_vec_mut(&mut folder.tasks, &parent_path)
                             {
                                 parent_task.sub_tasks.push(new_draft_task);
                             }
@@ -515,18 +529,12 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
         }
         KeyCode::Char('e') => {
             if app_state.focus == Focus::Folders {
-                if let Some(idx) = app_state.folder_state.selected() {
-                    if let Some(folder) = app_state.folders.get_mut(idx) {
-                        folder.editing = true;
-                    }
+                if let Some(folder) = app_state.get_active_folder_mut() {
+                    folder.editing = true;
                 }
             } else if app_state.focus == Focus::Tasks {
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
-                            task.editing = true;
-                        }
-                    }
+                if let Some(task) = get_selected_task_mut(app_state) {
+                    task.editing = true;
                 }
             }
             app_state.item_edit = true;
@@ -547,7 +555,9 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
                         } else {
                             let parent_path = &path[0..path.len() - 1];
                             let child_idx = path[path.len() - 1];
-                            if let Some(parent) = get_task_by_path(&mut folder.tasks, parent_path) {
+                            if let Some(parent) =
+                                get_task_in_vec_mut(&mut folder.tasks, parent_path)
+                            {
                                 parent.sub_tasks.remove(child_idx);
                             }
                         }
@@ -572,28 +582,20 @@ fn handle_key(key: KeyEvent, app_state: &mut AppState) -> bool {
             if app_state.focus == Focus::Tasks {
                 let new_draft_task = Task::new_draft();
 
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if let Some(parent_task) = get_task_by_path(&mut folder.tasks, &path) {
-                            parent_task.sub_tasks.push(new_draft_task);
-                            parent_task.expanded = true;
-                            app_state.new_item_added = true;
-                            jump_selection_to_draft(app_state);
-                        }
-                    }
+                if let Some(parent_task) = get_selected_task_mut(app_state) {
+                    parent_task.sub_tasks.push(new_draft_task);
+                    parent_task.expanded = true;
+                    app_state.new_item_added = true;
+                    jump_selection_to_draft(app_state);
                 }
             }
         }
         KeyCode::Enter => {
             // expand a task
             if app_state.focus == Focus::Tasks {
-                if let Some(path) = get_selected_path(app_state) {
-                    if let Some(folder) = app_state.get_active_folder_mut() {
-                        if let Some(task) = get_task_by_path(&mut folder.tasks, &path) {
-                            if !task.sub_tasks.is_empty() {
-                                task.expanded = !task.expanded;
-                            }
-                        }
+                if let Some(task) = get_selected_task_mut(app_state) {
+                    if !task.sub_tasks.is_empty() {
+                        task.expanded = !task.expanded;
                     }
                 }
             }
